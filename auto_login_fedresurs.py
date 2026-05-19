@@ -16,8 +16,14 @@ import sys
 from PyQt5.QtCore import QTimer, QUrl
 from PyQt5.QtWidgets import QApplication
 from PyQt5.QtWebEngineWidgets import QWebEngineView
+from PyQt5.QtWebEngineCore import QWebEngineProfile
 
 TARGET_URL = "https://old.bankrot.fedresurs.ru/BackOffice/ArbitrManager/Profile.aspx?storage=true"
+DEFAULT_CHROME_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0.0.0 Safari/537.36"
+)
 
 
 def build_js(login: str, password: str) -> str:
@@ -93,10 +99,18 @@ def main() -> int:
         default=2500,
         help="Задержка перед автозаполнением после загрузки страницы (мс)",
     )
+    parser.add_argument(
+        "--user-agent",
+        default=DEFAULT_CHROME_UA,
+        help="User-Agent для WebEngine (по умолчанию похож на обычный Chrome)",
+    )
 
     args = parser.parse_args()
 
     app = QApplication(sys.argv)
+    profile: QWebEngineProfile = QWebEngineProfile.defaultProfile()
+    profile.setHttpUserAgent(args.user_agent)
+
     view = QWebEngineView()
     view.setWindowTitle("Fedresurs Auto Login")
     view.resize(1280, 900)

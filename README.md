@@ -18,6 +18,7 @@ python auto_login_fedresurs.py --login Zakirov5 --password 3DqEdz
 
 - `--url` — адрес страницы входа (по умолчанию нужный URL)
 - `--delay-ms` — задержка перед автозаполнением после загрузки страницы
+- `--user-agent` — User-Agent для браузера (по умолчанию Chrome-подобный; помогает обходить 403 при блокировке WebView UA)
 
 ### Важно
 
