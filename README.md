@@ -1,12 +1,11 @@
-## Автовход в old.bankrot.fedresurs.ru через Chromium (Playwright)
+## Автовход в old.bankrot.fedresurs.ru через **ваш установленный Google Chrome**
 
-Скрипт `auto_login_fedresurs.py` открывает страницу входа в реальном Chromium через Playwright, подставляет логин/пароль и нажимает кнопку входа.
+Скрипт `auto_login_fedresurs.py` запускает именно ваш локальный `chrome.exe` (или Chrome на macOS/Linux), открывает URL и при необходимости подключается к этой же вкладке через CDP для автозаполнения.
 
 ### Установка
 
 ```bash
 pip install playwright
-playwright install chromium
 ```
 
 ### Запуск
@@ -15,14 +14,25 @@ playwright install chromium
 python auto_login_fedresurs.py --login Zakirov5 --password 3DqEdz
 ```
 
+### Варианты запуска
+
+```bash
+# Явно указать ваш chrome.exe
+python auto_login_fedresurs.py --login Zakirov5 --password 3DqEdz --browser-path "C:\Program Files\Google\Chrome\Application\chrome.exe"
+
+# Только открыть страницу в вашем Chrome без автозаполнения
+python auto_login_fedresurs.py --login Zakirov5 --password 3DqEdz --no-autofill
+```
+
 ### Параметры
 
-- `--url` — адрес страницы входа (по умолчанию нужный URL)
-- `--delay-ms` — задержка перед автозаполнением после загрузки страницы
-- `--user-agent` — User-Agent для браузера Chromium
-- `--headless` — запуск без интерфейса
-- `--browser-path` — путь к вашему установленному Google Chrome (если не указать, скрипт попытается найти его автоматически)
+- `--url` — адрес страницы входа
+- `--delay-ms` — задержка перед автозаполнением
+- `--user-agent` — User-Agent для вкладки при CDP-автозаполнении
+- `--browser-path` — путь к вашему Google Chrome
+- `--profile-dir` — отдельная папка профиля Chrome (опционально)
+- `--no-autofill` — просто открыть страницу в вашем Chrome
 
 ### Важно
 
-Если даже в системном Google Chrome видите 403, это обычно признак серверной блокировки по IP/anti-bot, а не проблема только User-Agent.
+Если в обычном Chrome тоже 403, это почти всегда серверная блокировка по IP/anti-bot/WAF.

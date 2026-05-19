@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Автоматизация входа на old.bankrot.fedresurs.ru через Playwright Chromium.
+Открытие old.bankrot.fedresurs.ru в установленном Google Chrome пользователя
+с опциональным автозаполнением через CDP.
 
 Установка зависимостей:
     pip install playwright
-    playwright install chromium
 
 Запуск:
     python auto_login_fedresurs.py --login Zakirov5 --password 3DqEdz
@@ -13,11 +13,13 @@
 import argparse
 import os
 import platform
+import socket
+import subprocess
 import sys
 import time
 from pathlib import Path
 
-from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import sync_playwright
 
 TARGET_URL = "https://old.bankrot.fedresurs.ru/BackOffice/ArbitrManager/Profile.aspx?storage=true"
@@ -26,8 +28,6 @@ DEFAULT_CHROME_UA = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/124.0.0.0 Safari/537.36"
 )
-
-
 
 
 def detect_system_chrome() -> str | None:
@@ -52,6 +52,14 @@ def detect_system_chrome() -> str | None:
         if candidate and Path(candidate).exists():
             return candidate
     return None
+
+
+def free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return int(s.getsockname()[1])
+
+
 def fill_login_form(page, login: str, password: str) -> str:
     js = """
     (payload) => {
@@ -114,66 +122,52 @@ def fill_login_form(page, login: str, password: str) -> str:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Автологин на old.bankrot.fedresurs.ru через Chromium")
+    parser = argparse.ArgumentParser(description="Открытие страницы входа через установленный Google Chrome")
     parser.add_argument("--login", required=True, help="Логин")
     parser.add_argument("--password", required=True, help="Пароль")
     parser.add_argument("--url", default=TARGET_URL, help="URL страницы входа")
-    parser.add_argument(
-        "--delay-ms",
-        type=int,
-        default=2500,
-        help="Задержка перед автозаполнением после загрузки страницы (мс)",
-    )
-    parser.add_argument(
-        "--user-agent",
-        default=DEFAULT_CHROME_UA,
-        help="User-Agent для Chromium",
-    )
-    parser.add_argument(
-        "--headless",
-        action="store_true",
-        help="Запуск без GUI (по умолчанию с окном браузера)",
-    )
-    parser.add_argument(
-        "--browser-path",
-        default=None,
-        help="Путь к установленному Google Chrome (если не указан, пробуем найти автоматически)",
-    )
+    parser.add_argument("--delay-ms", type=int, default=2500, help="Задержка перед автозаполнением (мс)")
+    parser.add_argument("--user-agent", default=DEFAULT_CHROME_UA, help="User-Agent для вкладки")
+    parser.add_argument("--browser-path", default=None, help="Путь к установленному Google Chrome")
+    parser.add_argument("--profile-dir", default=None, help="Папка профиля Chrome (опционально)")
+    parser.add_argument("--no-autofill", action="store_true", help="Только открыть URL в вашем Chrome без автозаполнения")
 
     args = parser.parse_args()
 
     chrome_path = args.browser_path or detect_system_chrome()
+    if not chrome_path:
+        print("Не найден установленный Google Chrome. Передайте --browser-path")
+        return 1
+
+    port = free_port()
+    cmd = [chrome_path, f"--remote-debugging-port={port}", args.url]
+    if args.profile_dir:
+        cmd.append(f"--user-data-dir={args.profile_dir}")
+
+    proc = subprocess.Popen(cmd)
+    print(f"Запущен ВАШ Google Chrome: {chrome_path}")
+    print(f"PID: {proc.pid}")
+
+    if args.no_autofill:
+        print("Автозаполнение отключено (--no-autofill).")
+        return 0
+
+    time.sleep(max(args.delay_ms, 0) / 1000)
 
     with sync_playwright() as p:
-        launch_kwargs = {"headless": args.headless}
-        if chrome_path:
-            launch_kwargs["executable_path"] = chrome_path
-            print(f"Запуск через системный Chrome: {chrome_path}")
-        else:
-            print("Системный Chrome не найден, запускаем встроенный Chromium Playwright")
-
-        browser = p.chromium.launch(**launch_kwargs)
-        context = browser.new_context(user_agent=args.user_agent)
-        page = context.new_page()
-
         try:
-            response = page.goto(args.url, wait_until="domcontentloaded", timeout=45000)
-            if response is not None and response.status == 403:
-                print("403 Forbidden даже в Chromium. Вероятно блок по IP/anti-bot на стороне сайта.")
+            browser = p.chromium.connect_over_cdp(f"http://127.0.0.1:{port}")
+            context = browser.contexts[0] if browser.contexts else browser.new_context(user_agent=args.user_agent)
+            page = context.pages[-1] if context.pages else context.new_page()
 
-            time.sleep(max(args.delay_ms, 0) / 1000)
+            if page.url == "about:blank":
+                page.goto(args.url, wait_until="domcontentloaded", timeout=45000)
+
             result = fill_login_form(page, args.login, args.password)
             print(result)
-
-            if not args.headless:
-                print("Браузер открыт. Закройте окно вручную после проверки.")
-                page.wait_for_event("close", timeout=0)
-        except PlaywrightTimeoutError:
-            print("Таймаут загрузки страницы")
-            return 1
-        finally:
-            context.close()
-            browser.close()
+        except PlaywrightError as exc:
+            print(f"Не удалось подключиться к вкладке Chrome через CDP: {exc}")
+            print("Но браузер открыт вашим chrome.exe — можно войти вручную.")
 
     return 0
 
