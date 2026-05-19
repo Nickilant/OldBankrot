@@ -1,11 +1,12 @@
-## Автовход в old.bankrot.fedresurs.ru через Python WebView
+## Автовход в old.bankrot.fedresurs.ru через Chromium (Playwright)
 
-Скрипт `auto_login_fedresurs.py` открывает страницу входа во встроенном браузере (PyQt5 WebEngine), подставляет логин/пароль и нажимает кнопку входа.
+Скрипт `auto_login_fedresurs.py` открывает страницу входа в реальном Chromium через Playwright, подставляет логин/пароль и нажимает кнопку входа.
 
 ### Установка
 
 ```bash
-pip install PyQt5 PyQtWebEngine
+pip install playwright
+playwright install chromium
 ```
 
 ### Запуск
@@ -18,8 +19,9 @@ python auto_login_fedresurs.py --login Zakirov5 --password 3DqEdz
 
 - `--url` — адрес страницы входа (по умолчанию нужный URL)
 - `--delay-ms` — задержка перед автозаполнением после загрузки страницы
-- `--user-agent` — User-Agent для браузера (по умолчанию Chrome-подобный; помогает обходить 403 при блокировке WebView UA)
+- `--user-agent` — User-Agent для браузера Chromium
+- `--headless` — запуск без интерфейса
 
 ### Важно
 
-Если структура страницы изменится, селекторы могут перестать находить поля/кнопку — тогда нужно немного подправить JS-логику в `build_js`.
+Если даже в Chromium видите 403, это обычно признак серверной блокировки по IP/anti-bot, а не проблема только User-Agent.

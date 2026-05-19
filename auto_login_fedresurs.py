@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
 """
-Автоматизация входа на old.bankrot.fedresurs.ru через WebView (PyQt5).
+Автоматизация входа на old.bankrot.fedresurs.ru через Playwright Chromium.
 
 Установка зависимостей:
-    pip install PyQt5 PyQtWebEngine
+    pip install playwright
+    playwright install chromium
 
 Запуск:
     python auto_login_fedresurs.py --login Zakirov5 --password 3DqEdz
 """
 
 import argparse
-import html
 import sys
+import time
 
-from PyQt5.QtCore import QTimer, QUrl
-from PyQt5.QtWidgets import QApplication
-from PyQt5.QtWebEngineWidgets import QWebEngineProfile, QWebEngineView
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+from playwright.sync_api import sync_playwright
 
 TARGET_URL = "https://old.bankrot.fedresurs.ru/BackOffice/ArbitrManager/Profile.aspx?storage=true"
 DEFAULT_CHROME_UA = (
@@ -25,29 +25,27 @@ DEFAULT_CHROME_UA = (
 )
 
 
-def build_js(login: str, password: str) -> str:
-    safe_login = html.escape(login, quote=True)
-    safe_password = html.escape(password, quote=True)
+def fill_login_form(page, login: str, password: str) -> str:
+    js = """
+    (payload) => {
+        const { login, password } = payload;
 
-    # Подставляем данные в первое найденное поле логина/пароля и нажимаем кнопку входа.
-    return f"""
-    (function() {{
-        function findInputByHints(hints, typeName) {{
+        function findInputByHints(hints, typeName) {
             const inputs = Array.from(document.querySelectorAll('input'));
-            return inputs.find(i => {{
+            return inputs.find((i) => {
                 const hay = [
                     i.id || '',
                     i.name || '',
                     i.placeholder || '',
                     i.className || '',
-                    i.getAttribute('aria-label') || ''
+                    i.getAttribute('aria-label') || '',
                 ].join(' ').toLowerCase();
 
-                const byHint = hints.some(h => hay.includes(h));
+                const byHint = hints.some((h) => hay.includes(h));
                 const byType = typeName ? (i.type || '').toLowerCase() === typeName : true;
                 return byHint || byType;
-            }}) || null;
-        }}
+            }) || null;
+        }
 
         const loginInput =
             findInputByHints(['login', 'логин', 'username', 'user'], null) ||
@@ -57,38 +55,39 @@ def build_js(login: str, password: str) -> str:
             findInputByHints(['password', 'пароль', 'pass'], 'password') ||
             document.querySelector('input[type="password"]');
 
-        if (!loginInput || !passwordInput) {{
+        if (!loginInput || !passwordInput) {
             return 'Не удалось найти поля логина/пароля';
-        }}
+        }
 
         loginInput.focus();
-        loginInput.value = '{safe_login}';
-        loginInput.dispatchEvent(new Event('input', {{ bubbles: true }}));
-        loginInput.dispatchEvent(new Event('change', {{ bubbles: true }}));
+        loginInput.value = login;
+        loginInput.dispatchEvent(new Event('input', { bubbles: true }));
+        loginInput.dispatchEvent(new Event('change', { bubbles: true }));
 
         passwordInput.focus();
-        passwordInput.value = '{safe_password}';
-        passwordInput.dispatchEvent(new Event('input', {{ bubbles: true }}));
-        passwordInput.dispatchEvent(new Event('change', {{ bubbles: true }}));
+        passwordInput.value = password;
+        passwordInput.dispatchEvent(new Event('input', { bubbles: true }));
+        passwordInput.dispatchEvent(new Event('change', { bubbles: true }));
 
         const submitButton = Array.from(document.querySelectorAll('button, input[type="submit"], a'))
-            .find(el => (el.textContent || el.value || '').toLowerCase().includes('вход') ||
-                        (el.textContent || el.value || '').toLowerCase().includes('login') ||
-                        (el.id || '').toLowerCase().includes('login') ||
-                        (el.name || '').toLowerCase().includes('login'));
+            .find((el) => (el.textContent || el.value || '').toLowerCase().includes('вход') ||
+                          (el.textContent || el.value || '').toLowerCase().includes('login') ||
+                          (el.id || '').toLowerCase().includes('login') ||
+                          (el.name || '').toLowerCase().includes('login'));
 
-        if (!submitButton) {{
+        if (!submitButton) {
             return 'Поля заполнены, но кнопка входа не найдена';
-        }}
+        }
 
         submitButton.click();
         return 'OK: поля заполнены, кнопка входа нажата';
-    }})();
+    }
     """
+    return page.evaluate(js, {"login": login, "password": password})
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Автологин на old.bankrot.fedresurs.ru через WebView")
+    parser = argparse.ArgumentParser(description="Автологин на old.bankrot.fedresurs.ru через Chromium")
     parser.add_argument("--login", required=True, help="Логин")
     parser.add_argument("--password", required=True, help="Пароль")
     parser.add_argument("--url", default=TARGET_URL, help="URL страницы входа")
@@ -101,34 +100,41 @@ def main() -> int:
     parser.add_argument(
         "--user-agent",
         default=DEFAULT_CHROME_UA,
-        help="User-Agent для WebEngine (по умолчанию похож на обычный Chrome)",
+        help="User-Agent для Chromium",
+    )
+    parser.add_argument(
+        "--headless",
+        action="store_true",
+        help="Запуск без GUI (по умолчанию с окном браузера)",
     )
 
     args = parser.parse_args()
 
-    app = QApplication(sys.argv)
-    profile: QWebEngineProfile = QWebEngineProfile.defaultProfile()
-    profile.setHttpUserAgent(args.user_agent)
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=args.headless)
+        context = browser.new_context(user_agent=args.user_agent)
+        page = context.new_page()
 
-    view = QWebEngineView()
-    view.setWindowTitle("Fedresurs Auto Login")
-    view.resize(1280, 900)
+        try:
+            response = page.goto(args.url, wait_until="domcontentloaded", timeout=45000)
+            if response is not None and response.status == 403:
+                print("403 Forbidden даже в Chromium. Вероятно блок по IP/anti-bot на стороне сайта.")
 
-    def run_autofill():
-        js = build_js(args.login, args.password)
-        view.page().runJavaScript(js, lambda result: print(result))
+            time.sleep(max(args.delay_ms, 0) / 1000)
+            result = fill_login_form(page, args.login, args.password)
+            print(result)
 
-    def on_load_finished(ok: bool):
-        if not ok:
-            print("Ошибка загрузки страницы")
-            return
-        QTimer.singleShot(max(args.delay_ms, 0), run_autofill)
+            if not args.headless:
+                print("Браузер открыт. Закройте окно вручную после проверки.")
+                page.wait_for_event("close", timeout=0)
+        except PlaywrightTimeoutError:
+            print("Таймаут загрузки страницы")
+            return 1
+        finally:
+            context.close()
+            browser.close()
 
-    view.loadFinished.connect(on_load_finished)
-    view.load(QUrl(args.url))
-    view.show()
-
-    return app.exec_()
+    return 0
 
 
 if __name__ == "__main__":
