@@ -15,8 +15,7 @@ import sys
 
 from PyQt5.QtCore import QTimer, QUrl
 from PyQt5.QtWidgets import QApplication
-from PyQt5.QtWebEngineWidgets import QWebEngineView
-from PyQt5.QtWebEngineCore import QWebEngineProfile
+from PyQt5.QtWebEngineWidgets import QWebEngineProfile, QWebEngineView
 
 TARGET_URL = "https://old.bankrot.fedresurs.ru/BackOffice/ArbitrManager/Profile.aspx?storage=true"
 DEFAULT_CHROME_UA = (
