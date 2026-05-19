@@ -11,8 +11,11 @@
 """
 
 import argparse
+import os
+import platform
 import sys
 import time
+from pathlib import Path
 
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
@@ -25,6 +28,30 @@ DEFAULT_CHROME_UA = (
 )
 
 
+
+
+def detect_system_chrome() -> str | None:
+    system = platform.system().lower()
+    candidates: list[str] = []
+
+    if system == "windows":
+        local_app_data = os.environ.get("LOCALAPPDATA", "")
+        program_files = os.environ.get("PROGRAMFILES", "")
+        program_files_x86 = os.environ.get("PROGRAMFILES(X86)", "")
+        candidates = [
+            str(Path(local_app_data) / "Google/Chrome/Application/chrome.exe") if local_app_data else "",
+            str(Path(program_files) / "Google/Chrome/Application/chrome.exe") if program_files else "",
+            str(Path(program_files_x86) / "Google/Chrome/Application/chrome.exe") if program_files_x86 else "",
+        ]
+    elif system == "darwin":
+        candidates = ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"]
+    else:
+        candidates = ["/usr/bin/google-chrome", "/usr/bin/google-chrome-stable", "/snap/bin/chromium"]
+
+    for candidate in candidates:
+        if candidate and Path(candidate).exists():
+            return candidate
+    return None
 def fill_login_form(page, login: str, password: str) -> str:
     js = """
     (payload) => {
@@ -107,11 +134,25 @@ def main() -> int:
         action="store_true",
         help="Запуск без GUI (по умолчанию с окном браузера)",
     )
+    parser.add_argument(
+        "--browser-path",
+        default=None,
+        help="Путь к установленному Google Chrome (если не указан, пробуем найти автоматически)",
+    )
 
     args = parser.parse_args()
 
+    chrome_path = args.browser_path or detect_system_chrome()
+
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=args.headless)
+        launch_kwargs = {"headless": args.headless}
+        if chrome_path:
+            launch_kwargs["executable_path"] = chrome_path
+            print(f"Запуск через системный Chrome: {chrome_path}")
+        else:
+            print("Системный Chrome не найден, запускаем встроенный Chromium Playwright")
+
+        browser = p.chromium.launch(**launch_kwargs)
         context = browser.new_context(user_agent=args.user_agent)
         page = context.new_page()
 

@@ -21,7 +21,8 @@ python auto_login_fedresurs.py --login Zakirov5 --password 3DqEdz
 - `--delay-ms` — задержка перед автозаполнением после загрузки страницы
 - `--user-agent` — User-Agent для браузера Chromium
 - `--headless` — запуск без интерфейса
+- `--browser-path` — путь к вашему установленному Google Chrome (если не указать, скрипт попытается найти его автоматически)
 
 ### Важно
 
-Если даже в Chromium видите 403, это обычно признак серверной блокировки по IP/anti-bot, а не проблема только User-Agent.
+Если даже в системном Google Chrome видите 403, это обычно признак серверной блокировки по IP/anti-bot, а не проблема только User-Agent.
