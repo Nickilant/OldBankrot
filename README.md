@@ -45,3 +45,6 @@ python auto_login_fedresurs.py --login Zakirov5 --password 3DqEdz --no-autofill
 
 
 Скрипт запускает Chrome с флагами `--no-first-run` и `--no-default-browser-check`, чтобы не появлялось стартовое окно входа в Chrome перед страницей сайта.
+
+
+Для формы Fedresurs скрипт также автоматически ставит галочку соглашения (`ctl00_ctplhMain_agreement`) перед нажатием кнопки входа.
