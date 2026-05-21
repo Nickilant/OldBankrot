@@ -126,10 +126,14 @@ def fill_login_form(page, login: str, password: str) -> str:
         }
 
         const loginInput =
+            document.querySelector('#ctl00_ctplhMain_Login1_UserName') ||
+            document.querySelector('input[name="ctl00$ctplhMain$Login1$UserName"]') ||
             findInputByHints(['login', 'логин', 'username', 'user'], null) ||
             document.querySelector('input[type="text"]');
 
         const passwordInput =
+            document.querySelector('#ctl00_ctplhMain_Login1_Password') ||
+            document.querySelector('input[name="ctl00$ctplhMain$Login1$Password"]') ||
             findInputByHints(['password', 'пароль', 'pass'], 'password') ||
             document.querySelector('input[type="password"]');
 
@@ -147,17 +151,24 @@ def fill_login_form(page, login: str, password: str) -> str:
         passwordInput.dispatchEvent(new Event('input', { bubbles: true }));
         passwordInput.dispatchEvent(new Event('change', { bubbles: true }));
 
-        const submitButton = Array.from(document.querySelectorAll('button, input[type="submit"], a'))
-            .find((el) => (el.textContent || el.value || '').toLowerCase().includes('вход') ||
-                          (el.textContent || el.value || '').toLowerCase().includes('login') ||
-                          (el.id || '').toLowerCase().includes('login') ||
-                          (el.name || '').toLowerCase().includes('login'));
+        const submitButton =
+            document.querySelector('#ctl00_ctplhMain_Login1_LoginImageButton') ||
+            document.querySelector('input[name="ctl00$ctplhMain$Login1$LoginImageButton"]') ||
+            document.querySelector('input[type="image"][alt*="Войти" i]') ||
+            Array.from(document.querySelectorAll('button, input[type="submit"], input[type="image"], a'))
+                .find((el) => (el.textContent || el.value || el.alt || '').toLowerCase().includes('вход') ||
+                              (el.textContent || el.value || el.alt || '').toLowerCase().includes('login') ||
+                              (el.id || '').toLowerCase().includes('login') ||
+                              (el.name || '').toLowerCase().includes('login'));
 
         if (!submitButton) {
             return 'Поля заполнены, но кнопка входа не найдена';
         }
 
-        submitButton.click();
+        submitButton.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+        if (typeof submitButton.click === "function") {
+            submitButton.click();
+        }
         return 'OK: поля заполнены, кнопка входа нажата';
     }
     """
@@ -192,6 +203,9 @@ def main() -> int:
 
     cmd = [
         chrome_path,
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-features=ChromeWhatsNewUI",
         f"--remote-debugging-port={port}",
         "--remote-debugging-address=127.0.0.1",
         f"--user-data-dir={profile_dir}",
