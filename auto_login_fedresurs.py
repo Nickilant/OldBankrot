@@ -157,10 +157,12 @@ def fill_login_form(page, login: str, password: str) -> str:
             document.querySelector('input[type="checkbox"][data-item="agreementCheckbox"]');
 
         if (agreementCheckbox) {
+            if (!agreementCheckbox.checked && typeof agreementCheckbox.click === "function") {
+                agreementCheckbox.click();
+            }
             agreementCheckbox.checked = true;
             agreementCheckbox.dispatchEvent(new Event('input', { bubbles: true }));
             agreementCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
-            agreementCheckbox.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
         }
 
         const submitButton =
@@ -186,6 +188,11 @@ def fill_login_form(page, login: str, password: str) -> str:
 
         if (typeof window.WebForm_DoPostBackWithOptions === 'function' && submitButton.name) {
             window.WebForm_DoPostBackWithOptions(new WebForm_PostBackOptions(submitButton.name, '', true, 'ctl00$ctplhMain$Login1', '', false, false));
+        } else {
+            const form = submitButton.form || submitButton.closest('form');
+            if (form && typeof form.submit === 'function') {
+                form.submit();
+            }
         }
 
         return agreementCheckbox
