@@ -11,12 +11,15 @@
 """
 
 import argparse
+import json
 import os
 import platform
 import socket
 import subprocess
 import sys
+import tempfile
 import time
+import urllib.request
 from pathlib import Path
 
 from playwright.sync_api import Error as PlaywrightError
@@ -58,6 +61,21 @@ def free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
         return int(s.getsockname()[1])
+
+
+def wait_cdp_ready(port: int, timeout_sec: float = 15.0) -> bool:
+    deadline = time.time() + timeout_sec
+    url = f"http://127.0.0.1:{port}/json/version"
+    while time.time() < deadline:
+        try:
+            with urllib.request.urlopen(url, timeout=1.5) as r:
+                data = json.loads(r.read().decode("utf-8", errors="ignore"))
+                if data.get("webSocketDebuggerUrl"):
+                    return True
+        except Exception:
+            pass
+        time.sleep(0.3)
+    return False
 
 
 def fill_login_form(page, login: str, password: str) -> str:
@@ -131,6 +149,7 @@ def main() -> int:
     parser.add_argument("--browser-path", default=None, help="Путь к установленному Google Chrome")
     parser.add_argument("--profile-dir", default=None, help="Папка профиля Chrome (опционально)")
     parser.add_argument("--no-autofill", action="store_true", help="Только открыть URL в вашем Chrome без автозаполнения")
+    parser.add_argument("--cdp-timeout-sec", type=float, default=20.0, help="Сколько ждать готовности CDP (сек)")
 
     args = parser.parse_args()
 
@@ -140,9 +159,20 @@ def main() -> int:
         return 1
 
     port = free_port()
-    cmd = [chrome_path, f"--remote-debugging-port={port}", args.url]
-    if args.profile_dir:
-        cmd.append(f"--user-data-dir={args.profile_dir}")
+    temp_profile_dir = None
+    profile_dir = args.profile_dir
+    if not profile_dir:
+        temp_profile_dir = tempfile.TemporaryDirectory(prefix="fedresurs-chrome-")
+        profile_dir = temp_profile_dir.name
+
+    cmd = [
+        chrome_path,
+        f"--remote-debugging-port={port}",
+        "--remote-debugging-address=127.0.0.1",
+        f"--user-data-dir={profile_dir}",
+        "--new-window",
+        args.url,
+    ]
 
     proc = subprocess.Popen(cmd)
     print(f"Запущен ВАШ Google Chrome: {chrome_path}")
@@ -151,6 +181,13 @@ def main() -> int:
     if args.no_autofill:
         print("Автозаполнение отключено (--no-autofill).")
         return 0
+
+    if not wait_cdp_ready(port, timeout_sec=max(args.cdp_timeout_sec, 1.0)):
+        print("CDP не поднялся вовремя. Проверьте, не блокирует ли антивирус/политики флаг remote-debugging.")
+        print("Браузер открыт вашим chrome.exe — можно войти вручную.")
+        if temp_profile_dir is not None:
+            temp_profile_dir.cleanup()
+        return 1
 
     time.sleep(max(args.delay_ms, 0) / 1000)
 
@@ -168,6 +205,10 @@ def main() -> int:
         except PlaywrightError as exc:
             print(f"Не удалось подключиться к вкладке Chrome через CDP: {exc}")
             print("Но браузер открыт вашим chrome.exe — можно войти вручную.")
+            return 1
+        finally:
+            if temp_profile_dir is not None:
+                temp_profile_dir.cleanup()
 
     return 0
 

@@ -30,9 +30,13 @@ python auto_login_fedresurs.py --login Zakirov5 --password 3DqEdz --no-autofill
 - `--delay-ms` — задержка перед автозаполнением
 - `--user-agent` — User-Agent для вкладки при CDP-автозаполнении
 - `--browser-path` — путь к вашему Google Chrome
-- `--profile-dir` — отдельная папка профиля Chrome (опционально)
+- `--profile-dir` — отдельная папка профиля Chrome (если не указать, скрипт создаёт временный профиль, чтобы CDP точно работал)
 - `--no-autofill` — просто открыть страницу в вашем Chrome
+- `--cdp-timeout-sec` — сколько ждать, пока Chrome поднимет CDP
 
 ### Важно
 
 Если в обычном Chrome тоже 403, это почти всегда серверная блокировка по IP/anti-bot/WAF.
+
+
+Примечание: если у вас уже открыт обычный Chrome, скрипт запускает отдельное окно с отдельным профилем, чтобы избежать `ECONNREFUSED` и гарантировать автологин через CDP.
