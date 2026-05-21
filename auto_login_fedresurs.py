@@ -19,6 +19,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -76,6 +77,30 @@ def wait_cdp_ready(port: int, timeout_sec: float = 15.0) -> bool:
             pass
         time.sleep(0.3)
     return False
+
+
+def safe_cleanup_temp_profile(temp_profile_dir: tempfile.TemporaryDirectory | None) -> None:
+    if temp_profile_dir is None:
+        return
+    try:
+        temp_profile_dir.cleanup()
+    except PermissionError:
+        print(
+            "Не удалось удалить временный профиль Chrome (файлы заняты запущенным браузером). "
+            f"Папка останется на диске: {temp_profile_dir.name}"
+        )
+
+
+def pick_target_page(browser, target_url: str):
+    target_host = urllib.parse.urlparse(target_url).netloc.lower()
+    for context in browser.contexts:
+        for page in reversed(context.pages):
+            page_host = urllib.parse.urlparse(page.url).netloc.lower()
+            if target_host and target_host in page_host:
+                return context, page
+    context = browser.contexts[0] if browser.contexts else browser.new_context()
+    page = context.new_page()
+    return context, page
 
 
 def fill_login_form(page, login: str, password: str) -> str:
@@ -185,8 +210,7 @@ def main() -> int:
     if not wait_cdp_ready(port, timeout_sec=max(args.cdp_timeout_sec, 1.0)):
         print("CDP не поднялся вовремя. Проверьте, не блокирует ли антивирус/политики флаг remote-debugging.")
         print("Браузер открыт вашим chrome.exe — можно войти вручную.")
-        if temp_profile_dir is not None:
-            temp_profile_dir.cleanup()
+        safe_cleanup_temp_profile(temp_profile_dir)
         return 1
 
     time.sleep(max(args.delay_ms, 0) / 1000)
@@ -194,21 +218,21 @@ def main() -> int:
     with sync_playwright() as p:
         try:
             browser = p.chromium.connect_over_cdp(f"http://127.0.0.1:{port}")
-            context = browser.contexts[0] if browser.contexts else browser.new_context(user_agent=args.user_agent)
-            page = context.pages[-1] if context.pages else context.new_page()
-
-            if page.url == "about:blank":
-                page.goto(args.url, wait_until="domcontentloaded", timeout=45000)
+            _context, page = pick_target_page(browser, args.url)
+            page.goto(args.url, wait_until="domcontentloaded", timeout=45000)
+            page.wait_for_timeout(max(args.delay_ms, 0))
 
             result = fill_login_form(page, args.login, args.password)
             print(result)
+            if "Не удалось найти поля" in result:
+                print(f"Текущий URL: {page.url}")
+                print(f"Заголовок страницы: {page.title()}")
         except PlaywrightError as exc:
             print(f"Не удалось подключиться к вкладке Chrome через CDP: {exc}")
             print("Но браузер открыт вашим chrome.exe — можно войти вручную.")
             return 1
         finally:
-            if temp_profile_dir is not None:
-                temp_profile_dir.cleanup()
+            safe_cleanup_temp_profile(temp_profile_dir)
 
     return 0
 
