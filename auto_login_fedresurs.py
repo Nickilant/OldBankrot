@@ -219,12 +219,33 @@ def open_new_message_form(page, timeout_ms: int = 45000) -> str:
 
 
 def search_individual_insolvent(page, query: str = "Абасс", timeout_ms: int = 45000) -> str:
-    persons_tab = page.locator("a.rtsLink:has-text('Физ. лица')")
+    persons_tab = page.locator(
+        "a.rtsLink:has-text('Физ. лица'), a[href*='InsolventListWindow.aspx'][href*='filterBy=egrip']"
+    )
     persons_tab.first.wait_for(state="visible", timeout=timeout_ms)
 
     context = page.context
     old_pages = list(context.pages)
-    persons_tab.first.click()
+    try:
+        persons_tab.first.click(timeout=timeout_ms)
+    except PlaywrightError:
+        page.evaluate(
+            """
+            () => {
+                const tab = document.querySelector("a.rtsLink .rtsTxt");
+                if (!tab || !tab.textContent || !tab.textContent.includes("Физ. лица")) {
+                    throw new Error("Вкладка Физ. лица не найдена");
+                }
+                const link = tab.closest("a");
+                link.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+                link.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
+                link.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+                if (typeof link.click === "function") {
+                    link.click();
+                }
+            }
+            """
+        )
 
     target_page = page
     deadline = time.time() + timeout_ms / 1000
@@ -233,6 +254,11 @@ def search_individual_insolvent(page, query: str = "Абасс", timeout_ms: int
         if new_pages:
             target_page = new_pages[-1]
             break
+
+        if page.locator("#ctl00_cplhContent_InsolventList_tbLastNameEgrip").count() > 0:
+            target_page = page
+            break
+
         if "InsolventListWindow.aspx" in page.url:
             target_page = page
             break
@@ -241,10 +267,15 @@ def search_individual_insolvent(page, query: str = "Абасс", timeout_ms: int
     target_page.wait_for_load_state("domcontentloaded", timeout=timeout_ms)
 
     last_name_input = target_page.locator("#ctl00_cplhContent_InsolventList_tbLastNameEgrip")
+    search_button = target_page.locator("#ctl00_cplhContent_InsolventList_btnSearchEgrip")
+    if last_name_input.count() == 0:
+        frame = target_page.frame_locator("iframe[src*='InsolventListWindow.aspx']")
+        last_name_input = frame.locator("#ctl00_cplhContent_InsolventList_tbLastNameEgrip")
+        search_button = frame.locator("#ctl00_cplhContent_InsolventList_btnSearchEgrip")
+
     last_name_input.first.wait_for(state="visible", timeout=timeout_ms)
     last_name_input.first.fill(query)
 
-    search_button = target_page.locator("#ctl00_cplhContent_InsolventList_btnSearchEgrip")
     search_button.first.wait_for(state="visible", timeout=timeout_ms)
     search_button.first.click()
 
