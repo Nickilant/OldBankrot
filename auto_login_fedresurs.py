@@ -203,6 +203,19 @@ def fill_login_form(page, login: str, password: str) -> str:
     return page.evaluate(js, {"login": login, "password": password})
 
 
+def open_new_message_form(page, timeout_ms: int = 45000) -> str:
+    create_button = page.locator('img[alt="Создать новое сообщение"]')
+    create_button.first.wait_for(state="visible", timeout=timeout_ms)
+    create_button.first.click()
+
+    insolvent_input = page.locator(
+        'input#ctl00_ctl00_ctplhMain_CentralContentPlaceHolder_MessageTypeSelector_InsolventPicker_InsolventName'
+    )
+    insolvent_input.first.wait_for(state="visible", timeout=timeout_ms)
+    insolvent_input.first.click()
+    return "OK: открыта форма нового сообщения и активировано поле выбора должника"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Открытие страницы входа через установленный Google Chrome")
     parser.add_argument("--login", required=True, help="Логин")
@@ -269,6 +282,9 @@ def main() -> int:
             if "Не удалось найти поля" in result:
                 print(f"Текущий URL: {page.url}")
                 print(f"Заголовок страницы: {page.title()}")
+            elif result.startswith("OK:"):
+                post_login_result = open_new_message_form(page)
+                print(post_login_result)
         except PlaywrightError as exc:
             print(f"Не удалось подключиться к вкладке Chrome через CDP: {exc}")
             print("Но браузер открыт вашим chrome.exe — можно войти вручную.")
