@@ -216,6 +216,40 @@ def open_new_message_form(page, timeout_ms: int = 45000) -> str:
     return "OK: открыта форма нового сообщения и активировано поле выбора должника"
 
 
+
+
+def search_individual_insolvent(page, query: str = "Абасс", timeout_ms: int = 45000) -> str:
+    persons_tab = page.locator("a.rtsLink:has-text('Физ. лица')")
+    persons_tab.first.wait_for(state="visible", timeout=timeout_ms)
+
+    context = page.context
+    old_pages = list(context.pages)
+    persons_tab.first.click()
+
+    target_page = page
+    deadline = time.time() + timeout_ms / 1000
+    while time.time() < deadline:
+        new_pages = [p for p in context.pages if p not in old_pages]
+        if new_pages:
+            target_page = new_pages[-1]
+            break
+        if "InsolventListWindow.aspx" in page.url:
+            target_page = page
+            break
+        time.sleep(0.2)
+
+    target_page.wait_for_load_state("domcontentloaded", timeout=timeout_ms)
+
+    last_name_input = target_page.locator("#ctl00_cplhContent_InsolventList_tbLastNameEgrip")
+    last_name_input.first.wait_for(state="visible", timeout=timeout_ms)
+    last_name_input.first.fill(query)
+
+    search_button = target_page.locator("#ctl00_cplhContent_InsolventList_btnSearchEgrip")
+    search_button.first.wait_for(state="visible", timeout=timeout_ms)
+    search_button.first.click()
+
+    return f"OK: открыта вкладка физ. лиц, введено '{query}', выполнен поиск"
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Открытие страницы входа через установленный Google Chrome")
     parser.add_argument("--login", required=True, help="Логин")
@@ -285,6 +319,8 @@ def main() -> int:
             elif result.startswith("OK:"):
                 post_login_result = open_new_message_form(page)
                 print(post_login_result)
+                search_result = search_individual_insolvent(page)
+                print(search_result)
         except PlaywrightError as exc:
             print(f"Не удалось подключиться к вкладке Chrome через CDP: {exc}")
             print("Но браузер открыт вашим chrome.exe — можно войти вручную.")
