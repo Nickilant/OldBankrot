@@ -1,11 +1,11 @@
-## Автовход в old.bankrot.fedresurs.ru через Python WebView
+## Автовход в old.bankrot.fedresurs.ru через **ваш установленный Google Chrome**
 
-Скрипт `auto_login_fedresurs.py` открывает страницу входа во встроенном браузере (PyQt5 WebEngine), подставляет логин/пароль и нажимает кнопку входа.
+Скрипт `auto_login_fedresurs.py` запускает именно ваш локальный `chrome.exe` (или Chrome на macOS/Linux), открывает URL и при необходимости подключается к этой же вкладке через CDP для автозаполнения.
 
 ### Установка
 
 ```bash
-pip install PyQt5 PyQtWebEngine
+pip install playwright
 ```
 
 ### Запуск
@@ -14,11 +14,40 @@ pip install PyQt5 PyQtWebEngine
 python auto_login_fedresurs.py --login Zakirov5 --password 3DqEdz
 ```
 
+### Варианты запуска
+
+```bash
+# Явно указать ваш chrome.exe
+python auto_login_fedresurs.py --login Zakirov5 --password 3DqEdz --browser-path "C:\Program Files\Google\Chrome\Application\chrome.exe"
+
+# Только открыть страницу в вашем Chrome без автозаполнения
+python auto_login_fedresurs.py --login Zakirov5 --password 3DqEdz --no-autofill
+```
+
 ### Параметры
 
-- `--url` — адрес страницы входа (по умолчанию нужный URL)
-- `--delay-ms` — задержка перед автозаполнением после загрузки страницы
+- `--url` — адрес страницы входа
+- `--delay-ms` — задержка перед автозаполнением
+- `--user-agent` — User-Agent для вкладки при CDP-автозаполнении
+- `--browser-path` — путь к вашему Google Chrome
+- `--profile-dir` — отдельная папка профиля Chrome (если не указать, скрипт создаёт временный профиль, чтобы CDP точно работал)
+- `--no-autofill` — просто открыть страницу в вашем Chrome
+- `--cdp-timeout-sec` — сколько ждать, пока Chrome поднимет CDP
 
 ### Важно
 
-Если структура страницы изменится, селекторы могут перестать находить поля/кнопку — тогда нужно немного подправить JS-логику в `build_js`.
+Если в обычном Chrome тоже 403, это почти всегда серверная блокировка по IP/anti-bot/WAF.
+
+
+Примечание: если у вас уже открыт обычный Chrome, скрипт запускает отдельное окно с отдельным профилем, чтобы избежать `ECONNREFUSED` и гарантировать автологин через CDP.
+
+Если Chrome оставляет временный профиль занятым на Windows, скрипт не падает: он выведет путь к папке, которую можно удалить позже вручную.
+
+
+Скрипт запускает Chrome с флагами `--no-first-run` и `--no-default-browser-check`, чтобы не появлялось стартовое окно входа в Chrome перед страницей сайта.
+
+
+Для формы Fedresurs скрипт также автоматически ставит галочку соглашения (`ctl00_ctplhMain_agreement`) перед нажатием кнопки входа.
+
+
+Логика галочки обновлена: если чекбокс не отмечен, сначала вызывается `click()`, затем принудительно сохраняется `checked=true`, чтобы избежать случайного снятия галочки.
