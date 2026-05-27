@@ -371,6 +371,51 @@ def select_creditor_claims_message_type(page, timeout_ms: int = 45000) -> str:
     print("[DEBUG] Выбран тип: 'Уведомление о получении требований кредитора'.")
     return "OK: выбран тип сообщения 'Уведомление о получении требований кредитора'"
 
+
+def select_legal_case_and_continue(page, timeout_ms: int = 45000) -> str:
+    print("[DEBUG] Выбираем номер дела из выпадающего списка...")
+    legal_case_select = page.locator(
+        "#ctl00_ctl00_ctplhMain_CentralContentPlaceHolder_MessageTypeSelector_InsolventPicker_LegalCasesDropDownList"
+    )
+    legal_case_select.first.wait_for(state="visible", timeout=timeout_ms)
+
+    selected_value = legal_case_select.first.evaluate(
+        """
+        (el) => {
+            const options = Array.from(el.options || []);
+            const target = options.find((o) => (o.value || '').trim() && (o.textContent || '').trim());
+            if (!target) {
+                return null;
+            }
+            el.value = target.value;
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+            return target.value;
+        }
+        """
+    )
+    if not selected_value:
+        raise PlaywrightError("Не найден непустой вариант с номером дела в списке LegalCasesDropDownList")
+    print(f"[DEBUG] Выбран номер дела, value={selected_value}")
+
+    next_button = page.locator(
+        "#ctl00_ctl00_ctplhMain_CentralContentPlaceHolder_MessageTypeSelector_SelectImageButton"
+    )
+    next_button.first.wait_for(state="visible", timeout=timeout_ms)
+    next_button.first.click()
+    print("[DEBUG] Нажата кнопка 'Далее'.")
+    return "OK: выбран номер дела и нажата кнопка 'Далее'"
+
+
+def fill_message_text(page, timeout_ms: int = 60000) -> str:
+    print("[DEBUG] Ожидание страницы создания сообщения...")
+    message_textarea = page.locator(
+        "#ctl00_ctl00_ctplhMain_CentralContentPlaceHolder_ucCreateMessage_messageListView_ctrl0_ObjectProxy_ctrl0_ReceivingCreditorDemand2Message_ObjectProxy_ctrl0_ObjectProxyView1_ctrl0_Message"
+    )
+    message_textarea.first.wait_for(state="visible", timeout=timeout_ms)
+    message_textarea.first.fill("Это тестовый текст, все вроде супер работает")
+    print("[DEBUG] Текст сообщения заполнен.")
+    return "OK: текст сообщения заполнен"
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Открытие страницы входа через установленный Google Chrome")
     parser.add_argument("--login", required=True, help="Логин")
@@ -444,6 +489,10 @@ def main() -> int:
                 print(search_result)
                 message_type_result = select_creditor_claims_message_type(page)
                 print(message_type_result)
+                legal_case_result = select_legal_case_and_continue(page)
+                print(legal_case_result)
+                fill_message_result = fill_message_text(page)
+                print(fill_message_result)
         except PlaywrightError as exc:
             print(f"Не удалось подключиться к вкладке Chrome через CDP: {exc}")
             print("Но браузер открыт вашим chrome.exe — можно войти вручную.")
