@@ -163,13 +163,38 @@ def fill_login_form(page, login: str, password: str) -> str:
         const loginInput = document.querySelector('#ctl00_ctplhMain_Login1_UserName') || document.querySelector('input[type="text"]');
         const passwordInput = document.querySelector('#ctl00_ctplhMain_Login1_Password') || document.querySelector('input[type="password"]');
         if (!loginInput || !passwordInput) return 'Не удалось найти поля логина/пароля';
-        loginInput.value = login; passwordInput.value = password;
+
+        loginInput.focus();
+        loginInput.value = login;
         loginInput.dispatchEvent(new Event('input', { bubbles: true }));
+        loginInput.dispatchEvent(new Event('change', { bubbles: true }));
+
+        passwordInput.focus();
+        passwordInput.value = password;
         passwordInput.dispatchEvent(new Event('input', { bubbles: true }));
+        passwordInput.dispatchEvent(new Event('change', { bubbles: true }));
+
+        const agreementCheckbox =
+            document.querySelector('#ctl00_ctplhMain_agreement') ||
+            document.querySelector('input[name="ctl00$ctplhMain$agreement"]') ||
+            document.querySelector('input[type="checkbox"][data-item="agreementCheckbox"]');
+
+        if (agreementCheckbox) {
+            if (!agreementCheckbox.checked && typeof agreementCheckbox.click === 'function') {
+                agreementCheckbox.click();
+            }
+            agreementCheckbox.checked = true;
+            agreementCheckbox.dispatchEvent(new Event('input', { bubbles: true }));
+            agreementCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+
         const submitButton = document.querySelector('#ctl00_ctplhMain_Login1_LoginImageButton') || document.querySelector('input[type="submit"],input[type="image"],button');
         if (!submitButton) return 'Поля заполнены, но кнопка входа не найдена';
         submitButton.click();
-        return 'OK: поля заполнены, кнопка входа нажата';
+
+        return agreementCheckbox
+            ? 'OK: поля заполнены, галочка согласия установлена, кнопка входа нажата'
+            : 'OK: поля заполнены, кнопка входа нажата (галочка согласия не найдена)';
     }
     """
     return page.evaluate(js, {"login": login, "password": password})
