@@ -200,36 +200,187 @@ def fill_login_form(page, login: str, password: str) -> str:
     return page.evaluate(js, {"login": login, "password": password})
 
 
-def open_new_message_form(page, timeout_ms: int = 45000) -> None:
-    page.locator('img[alt="Создать новое сообщение"]').first.wait_for(state="visible", timeout=timeout_ms)
-    page.locator('img[alt="Создать новое сообщение"]').first.click()
-    page.locator('input#ctl00_ctl00_ctplhMain_CentralContentPlaceHolder_MessageTypeSelector_InsolventPicker_InsolventName').first.wait_for(state="visible", timeout=timeout_ms)
+def open_new_message_form(page, timeout_ms: int = 45000) -> str:
+    create_button = page.locator('img[alt="Создать новое сообщение"]')
+    create_button.first.wait_for(state="visible", timeout=timeout_ms)
+    create_button.first.click()
+
+    insolvent_input = page.locator(
+        'input#ctl00_ctl00_ctplhMain_CentralContentPlaceHolder_MessageTypeSelector_InsolventPicker_InsolventName'
+    )
+    insolvent_input.first.wait_for(state="visible", timeout=timeout_ms)
+    insolvent_input.first.click()
+    return "OK: открыта форма нового сообщения и активировано поле выбора должника"
 
 
-def search_individual_insolvent(page, inn: str, timeout_ms: int = 45000) -> None:
+def search_individual_insolvent(page, inn: str, timeout_ms: int = 45000) -> str:
     page.wait_for_timeout(1200)
-    tab = page.locator("a.rtsLink:has-text('Физ. лица')").first
-    tab.wait_for(state="visible", timeout=timeout_ms)
-    tab.click(timeout=timeout_ms)
+
+    def find_tab_container():
+        frames = [page.main_frame] + [f for f in page.frames if f != page.main_frame]
+        for frame in frames:
+            tab = frame.locator(
+                "a.rtsLink:has-text('Физ. лица'), a[href*='InsolventListWindow.aspx'][href*='filterBy=egrip']"
+            )
+            if tab.count() > 0:
+                return frame, tab
+        return None, None
+
+    frame, persons_tab = find_tab_container()
+    if frame is None or persons_tab is None:
+        frame_urls = ", ".join([f.url for f in page.frames])
+        raise PlaywrightError(f"Вкладка 'Физ. лица' не найдена ни в одном фрейме. Frames: {frame_urls}")
+
+    context = page.context
+    old_pages = list(context.pages)
+    try:
+        persons_tab.first.click(timeout=timeout_ms)
+    except PlaywrightError:
+        frame.evaluate(
+            """
+            () => {
+                const tab = document.querySelector("a.rtsLink .rtsTxt");
+                if (!tab || !tab.textContent || !tab.textContent.includes("Физ. лица")) {
+                    throw new Error("Вкладка Физ. лица не найдена");
+                }
+                const link = tab.closest("a");
+                link.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+                link.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
+                link.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+                if (typeof link.click === "function") {
+                    link.click();
+                }
+            }
+            """
+        )
 
     target_page = page
+    deadline = time.time() + timeout_ms / 1000
+    while time.time() < deadline:
+        new_pages = [p for p in context.pages if p not in old_pages]
+        if new_pages:
+            target_page = new_pages[-1]
+            break
+
+        if page.locator("#ctl00_cplhContent_InsolventList_EgripOrganizationCode_CodeTextBox").count() > 0:
+            target_page = page
+            break
+
+        frame_input_detected = False
+        for frm in target_page.frames:
+            if frm.locator("#ctl00_cplhContent_InsolventList_EgripOrganizationCode_CodeTextBox").count() > 0:
+                frame_input_detected = True
+                break
+        if frame_input_detected:
+            break
+
+        if "InsolventListWindow.aspx" in page.url:
+            target_page = page
+            break
+        time.sleep(0.2)
+
     target_page.wait_for_load_state("domcontentloaded", timeout=timeout_ms)
+
     inn_input = target_page.locator("#ctl00_cplhContent_InsolventList_EgripOrganizationCode_CodeTextBox")
     search_button = target_page.locator("#ctl00_cplhContent_InsolventList_btnSearchEgrip")
     result_row = target_page.locator("#resultTable tbody tr[onclick*='ReturnInsolvent']")
+    if inn_input.count() == 0:
+        dynamic_frame = target_page.frame_locator("iframe[src*='InsolventListWindow.aspx']")
+        inn_input = dynamic_frame.locator("#ctl00_cplhContent_InsolventList_EgripOrganizationCode_CodeTextBox")
+        search_button = dynamic_frame.locator("#ctl00_cplhContent_InsolventList_btnSearchEgrip")
+        result_row = dynamic_frame.locator("#resultTable tbody tr[onclick*='ReturnInsolvent']")
+
     inn_input.first.wait_for(state="visible", timeout=timeout_ms)
     inn_input.first.fill(inn)
+    search_button.first.wait_for(state="visible", timeout=timeout_ms)
     search_button.first.click()
+
     result_row.first.wait_for(state="visible", timeout=timeout_ms)
     result_row.first.click()
 
+    return "OK: открыта вкладка физ. лиц, введен ИНН, выполнен поиск и выбран найденный должник"
 
-def fill_message_text(page, message_text: str, timeout_ms: int = 60000) -> None:
+
+def select_creditor_claims_message_type(page, timeout_ms: int = 45000) -> str:
+    message_type_input = page.locator(
+        "#ctl00_ctl00_ctplhMain_CentralContentPlaceHolder_MessageTypeSelector_MessageTypeTextBox"
+    )
+    message_type_input.first.wait_for(state="visible", timeout=timeout_ms)
+    message_type_input.first.click()
+    page.wait_for_timeout(700)
+
+    tree_root_selector = "#ctl00_cplhContent_MessageTypeTree"
+    tree_scope = page
+    tree_found = page.locator(tree_root_selector).count() > 0
+
+    if not tree_found:
+        for frm in page.frames:
+            if frm.locator(tree_root_selector).count() > 0:
+                tree_scope = frm
+                tree_found = True
+                break
+
+    if not tree_found:
+        frame_urls = ", ".join([f.url for f in page.frames])
+        raise PlaywrightError(f"Дерево типов сообщений не найдено. Frames: {frame_urls}")
+
+    category_node = tree_scope.locator(
+        f"{tree_root_selector} li:has(span.rtIn:has-text('Требования кредиторов'))"
+    ).first
+    category_node.wait_for(state="visible", timeout=timeout_ms)
+
+    plus_icon = category_node.locator("span.rtPlus")
+    if plus_icon.count() > 0:
+        plus_icon.first.click()
+    else:
+        category_node.locator("span.rtIn:has-text('Требования кредиторов')").first.click()
+
+    message_type_item = tree_scope.locator(
+        f"{tree_root_selector} span.rtIn:has-text('Уведомление о получении требований кредитора')"
+    ).first
+    message_type_item.wait_for(state="visible", timeout=timeout_ms)
+    message_type_item.click()
+    return "OK: выбран тип сообщения 'Уведомление о получении требований кредитора'"
+
+
+def select_legal_case_and_continue(page, timeout_ms: int = 45000) -> str:
+    legal_case_select = page.locator(
+        "#ctl00_ctl00_ctplhMain_CentralContentPlaceHolder_MessageTypeSelector_InsolventPicker_LegalCasesDropDownList"
+    )
+    legal_case_select.first.wait_for(state="visible", timeout=timeout_ms)
+
+    selected_value = legal_case_select.first.evaluate(
+        """
+        (el) => {
+            const options = Array.from(el.options || []);
+            const target = options.find((o) => (o.value || '').trim() && (o.textContent || '').trim());
+            if (!target) {
+                return null;
+            }
+            el.value = target.value;
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+            return target.value;
+        }
+        """
+    )
+    if not selected_value:
+        raise PlaywrightError("Не найден непустой вариант с номером дела в списке LegalCasesDropDownList")
+
+    next_button = page.locator(
+        "#ctl00_ctl00_ctplhMain_CentralContentPlaceHolder_MessageTypeSelector_SelectImageButton"
+    )
+    next_button.first.wait_for(state="visible", timeout=timeout_ms)
+    next_button.first.click()
+    return "OK: выбран номер дела и нажата кнопка 'Далее'"
+
+
+def fill_message_text(page, message_text: str, timeout_ms: int = 60000) -> str:
     message_textarea = page.locator(
         "#ctl00_ctl00_ctplhMain_CentralContentPlaceHolder_ucCreateMessage_messageListView_ctrl0_ObjectProxy_ctrl0_ReceivingCreditorDemand2Message_ObjectProxy_ctrl0_ObjectProxyView1_ctrl0_Message"
     )
     message_textarea.first.wait_for(state="visible", timeout=timeout_ms)
     message_textarea.first.fill(message_text)
+    return "OK: текст сообщения заполнен"
 
 
 def run_automation(*, login: str, password: str, inn: str, message_text: str, chrome_path: str, url: str, delay_ms: int, cdp_timeout_sec: float) -> dict:
@@ -264,6 +415,8 @@ def run_automation(*, login: str, password: str, inn: str, message_text: str, ch
                 return {"ok": False, "error": result, "pid": proc.pid}
             open_new_message_form(page)
             search_individual_insolvent(page, inn=inn)
+            select_creditor_claims_message_type(page)
+            select_legal_case_and_continue(page)
             fill_message_text(page, message_text=message_text)
         return {"ok": True, "pid": proc.pid}
     except PlaywrightError as exc:
