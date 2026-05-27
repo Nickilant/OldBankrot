@@ -203,12 +203,14 @@ def fill_login_form(page, login: str, password: str) -> str:
 def open_new_message_form(page, timeout_ms: int = 45000) -> str:
     create_button = page.locator('img[alt="Создать новое сообщение"]')
     create_button.first.wait_for(state="visible", timeout=timeout_ms)
+    page.wait_for_timeout(150)
     create_button.first.click()
 
     insolvent_input = page.locator(
         'input#ctl00_ctl00_ctplhMain_CentralContentPlaceHolder_MessageTypeSelector_InsolventPicker_InsolventName'
     )
     insolvent_input.first.wait_for(state="visible", timeout=timeout_ms)
+    page.wait_for_timeout(150)
     insolvent_input.first.click()
     return "OK: открыта форма нового сообщения и активировано поле выбора должника"
 
@@ -234,6 +236,7 @@ def search_individual_insolvent(page, inn: str, timeout_ms: int = 45000) -> str:
     context = page.context
     old_pages = list(context.pages)
     try:
+        page.wait_for_timeout(150)
         persons_tab.first.click(timeout=timeout_ms)
     except PlaywrightError:
         frame.evaluate(
@@ -291,11 +294,14 @@ def search_individual_insolvent(page, inn: str, timeout_ms: int = 45000) -> str:
         result_row = dynamic_frame.locator("#resultTable tbody tr[onclick*='ReturnInsolvent']")
 
     inn_input.first.wait_for(state="visible", timeout=timeout_ms)
+    page.wait_for_timeout(150)
     inn_input.first.fill(inn)
     search_button.first.wait_for(state="visible", timeout=timeout_ms)
+    page.wait_for_timeout(150)
     search_button.first.click()
 
     result_row.first.wait_for(state="visible", timeout=timeout_ms)
+    page.wait_for_timeout(150)
     result_row.first.click()
 
     return "OK: открыта вкладка физ. лиц, введен ИНН, выполнен поиск и выбран найденный должник"
@@ -306,6 +312,7 @@ def select_creditor_claims_message_type(page, timeout_ms: int = 45000) -> str:
         "#ctl00_ctl00_ctplhMain_CentralContentPlaceHolder_MessageTypeSelector_MessageTypeTextBox"
     )
     message_type_input.first.wait_for(state="visible", timeout=timeout_ms)
+    page.wait_for_timeout(150)
     message_type_input.first.click()
     page.wait_for_timeout(700)
 
@@ -331,14 +338,17 @@ def select_creditor_claims_message_type(page, timeout_ms: int = 45000) -> str:
 
     plus_icon = category_node.locator("span.rtPlus")
     if plus_icon.count() > 0:
+        page.wait_for_timeout(150)
         plus_icon.first.click()
     else:
+        page.wait_for_timeout(150)
         category_node.locator("span.rtIn:has-text('Требования кредиторов')").first.click()
 
     message_type_item = tree_scope.locator(
         f"{tree_root_selector} span.rtIn:has-text('Уведомление о получении требований кредитора')"
     ).first
     message_type_item.wait_for(state="visible", timeout=timeout_ms)
+    page.wait_for_timeout(150)
     message_type_item.click()
     return "OK: выбран тип сообщения 'Уведомление о получении требований кредитора'"
 
@@ -370,6 +380,7 @@ def select_legal_case_and_continue(page, timeout_ms: int = 45000) -> str:
         "#ctl00_ctl00_ctplhMain_CentralContentPlaceHolder_MessageTypeSelector_SelectImageButton"
     )
     next_button.first.wait_for(state="visible", timeout=timeout_ms)
+    page.wait_for_timeout(150)
     next_button.first.click()
     return "OK: выбран номер дела и нажата кнопка 'Далее'"
 
@@ -379,6 +390,7 @@ def fill_message_text(page, message_text: str, timeout_ms: int = 60000) -> str:
         "#ctl00_ctl00_ctplhMain_CentralContentPlaceHolder_ucCreateMessage_messageListView_ctrl0_ObjectProxy_ctrl0_ReceivingCreditorDemand2Message_ObjectProxy_ctrl0_ObjectProxyView1_ctrl0_Message"
     )
     message_textarea.first.wait_for(state="visible", timeout=timeout_ms)
+    page.wait_for_timeout(150)
     message_textarea.first.fill(message_text)
     return "OK: текст сообщения заполнен"
 
@@ -410,13 +422,19 @@ def run_automation(*, login: str, password: str, inn: str, message_text: str, ch
             _context, page = pick_target_page(browser, url)
             page.goto(url, wait_until="domcontentloaded", timeout=45000)
             page.wait_for_timeout(max(delay_ms, 0))
+            page.wait_for_timeout(150)
             result = fill_login_form(page, login, password)
             if not result.startswith("OK:"):
                 return {"ok": False, "error": result, "pid": proc.pid}
+            page.wait_for_timeout(150)
             open_new_message_form(page)
+            page.wait_for_timeout(150)
             search_individual_insolvent(page, inn=inn)
+            page.wait_for_timeout(150)
             select_creditor_claims_message_type(page)
+            page.wait_for_timeout(150)
             select_legal_case_and_continue(page)
+            page.wait_for_timeout(150)
             fill_message_text(page, message_text=message_text)
         return {"ok": True, "pid": proc.pid}
     except PlaywrightError as exc:
