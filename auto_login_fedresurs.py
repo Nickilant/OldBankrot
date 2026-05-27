@@ -297,25 +297,54 @@ def search_individual_insolvent(page, query: str = "Абасс", timeout_ms: int
     print(f"[DEBUG] Режим открытия вкладки: {detection_mode}. Текущий URL: {target_page.url}")
     target_page.wait_for_load_state("domcontentloaded", timeout=timeout_ms)
 
-    last_name_input = target_page.locator("#ctl00_cplhContent_InsolventList_tbLastNameEgrip")
+    inn_input = target_page.locator("#ctl00_cplhContent_InsolventList_EgripOrganizationCode_CodeTextBox")
     search_button = target_page.locator("#ctl00_cplhContent_InsolventList_btnSearchEgrip")
-    if last_name_input.count() == 0:
-        print("[DEBUG] Поле не найдено в основном DOM, пробуем iframe.")
+    result_row = target_page.locator("#resultTable tbody tr[onclick*='ReturnInsolvent']")
+    if inn_input.count() == 0:
+        print("[DEBUG] Поле ИНН не найдено в основном DOM, пробуем iframe.")
         dynamic_frame = target_page.frame_locator("iframe[src*='InsolventListWindow.aspx']")
-        last_name_input = dynamic_frame.locator("#ctl00_cplhContent_InsolventList_tbLastNameEgrip")
+        inn_input = dynamic_frame.locator("#ctl00_cplhContent_InsolventList_EgripOrganizationCode_CodeTextBox")
         search_button = dynamic_frame.locator("#ctl00_cplhContent_InsolventList_btnSearchEgrip")
+        result_row = dynamic_frame.locator("#resultTable tbody tr[onclick*='ReturnInsolvent']")
     else:
-        print("[DEBUG] Поле найдено в основном DOM страницы.")
+        print("[DEBUG] Поле ИНН найдено в основном DOM страницы.")
 
-    last_name_input.first.wait_for(state="visible", timeout=timeout_ms)
-    last_name_input.first.fill(query)
-    print(f"[DEBUG] Введено значение в поле фамилии: {query}")
+    inn_input.first.wait_for(state="visible", timeout=timeout_ms)
+    inn_input.first.fill("051100482760")
+    print("[DEBUG] Введено значение ИНН: 051100482760")
 
     search_button.first.wait_for(state="visible", timeout=timeout_ms)
     search_button.first.click()
     print("[DEBUG] Кнопка поиска нажата.")
 
-    return f"OK: открыта вкладка физ. лиц, введено '{query}', выполнен поиск"
+    result_row.first.wait_for(state="visible", timeout=timeout_ms)
+    result_row.first.click()
+    print("[DEBUG] Выбрана единственная строка результата, модальное окно выбора должника закрыто.")
+
+    return "OK: открыта вкладка физ. лиц, введен ИНН, выполнен поиск и выбран найденный должник"
+
+
+def select_creditor_claims_message_type(page, timeout_ms: int = 45000) -> str:
+    print("[DEBUG] Открываем выбор типа сообщения...")
+    message_type_input = page.locator(
+        "#ctl00_ctl00_ctplhMain_CentralContentPlaceHolder_MessageTypeSelector_MessageTypeTextBox"
+    )
+    message_type_input.first.wait_for(state="visible", timeout=timeout_ms)
+    message_type_input.first.click()
+
+    category_expand = page.locator(
+        "li:has(span.rtIn:has-text('Требования кредиторов')) span.rtPlus, "
+        "span.rtIn:has-text('Требования кредиторов')"
+    )
+    category_expand.first.wait_for(state="visible", timeout=timeout_ms)
+    category_expand.first.click()
+    print("[DEBUG] Категория 'Требования кредиторов' раскрыта.")
+
+    message_type_item = page.locator("span.rtIn:has-text('Уведомление о получении требований кредитора')")
+    message_type_item.first.wait_for(state="visible", timeout=timeout_ms)
+    message_type_item.first.click()
+    print("[DEBUG] Выбран тип: 'Уведомление о получении требований кредитора'.")
+    return "OK: выбран тип сообщения 'Уведомление о получении требований кредитора'"
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Открытие страницы входа через установленный Google Chrome")
@@ -388,6 +417,8 @@ def main() -> int:
                 print(post_login_result)
                 search_result = search_individual_insolvent(page)
                 print(search_result)
+                message_type_result = select_creditor_claims_message_type(page)
+                print(message_type_result)
         except PlaywrightError as exc:
             print(f"Не удалось подключиться к вкладке Chrome через CDP: {exc}")
             print("Но браузер открыт вашим chrome.exe — можно войти вручную.")
