@@ -331,18 +331,43 @@ def select_creditor_claims_message_type(page, timeout_ms: int = 45000) -> str:
     )
     message_type_input.first.wait_for(state="visible", timeout=timeout_ms)
     message_type_input.first.click()
+    page.wait_for_timeout(700)
 
-    category_expand = page.locator(
-        "li:has(span.rtIn:has-text('Требования кредиторов')) span.rtPlus, "
-        "span.rtIn:has-text('Требования кредиторов')"
-    )
-    category_expand.first.wait_for(state="visible", timeout=timeout_ms)
-    category_expand.first.click()
-    print("[DEBUG] Категория 'Требования кредиторов' раскрыта.")
+    tree_root_selector = "#ctl00_cplhContent_MessageTypeTree"
+    tree_scope = page
+    tree_found = page.locator(tree_root_selector).count() > 0
 
-    message_type_item = page.locator("span.rtIn:has-text('Уведомление о получении требований кредитора')")
-    message_type_item.first.wait_for(state="visible", timeout=timeout_ms)
-    message_type_item.first.click()
+    if not tree_found:
+        for frm in page.frames:
+            if frm.locator(tree_root_selector).count() > 0:
+                tree_scope = frm
+                tree_found = True
+                break
+
+    if not tree_found:
+        frame_urls = ", ".join([f.url for f in page.frames])
+        raise PlaywrightError(f"Дерево типов сообщений не найдено. Frames: {frame_urls}")
+
+    print("[DEBUG] Дерево типов сообщений найдено, раскрываем 'Требования кредиторов'.")
+
+    category_node = tree_scope.locator(
+        f"{tree_root_selector} li:has(span.rtIn:has-text('Требования кредиторов'))"
+    ).first
+    category_node.wait_for(state="visible", timeout=timeout_ms)
+
+    plus_icon = category_node.locator("span.rtPlus")
+    if plus_icon.count() > 0:
+        plus_icon.first.click()
+        print("[DEBUG] Клик по '+' выполнен.")
+    else:
+        category_node.locator("span.rtIn:has-text('Требования кредиторов')").first.click()
+        print("[DEBUG] '+' не найден, кликнули по тексту категории.")
+
+    message_type_item = tree_scope.locator(
+        f"{tree_root_selector} span.rtIn:has-text('Уведомление о получении требований кредитора')"
+    ).first
+    message_type_item.wait_for(state="visible", timeout=timeout_ms)
+    message_type_item.click()
     print("[DEBUG] Выбран тип: 'Уведомление о получении требований кредитора'.")
     return "OK: выбран тип сообщения 'Уведомление о получении требований кредитора'"
 
