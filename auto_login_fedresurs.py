@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 """
-Открытие old.bankrot.fedresurs.ru в установленном Google Chrome пользователя
-с опциональным автозаполнением через CDP.
+Автоматизация old.bankrot.fedresurs.ru как CLI и как HTTP API.
 
 Установка зависимостей:
-    pip install playwright
+    pip install playwright fastapi uvicorn
 
-Запуск:
-    python auto_login_fedresurs.py --login Zakirov5 --password 3DqEdz
+Запуск API:
+    python auto_login_fedresurs.py serve --host 0.0.0.0 --port 8080 --workers 2
+
+Запуск CLI (обратная совместимость):
+    python auto_login_fedresurs.py run --login USER --password PASS --inn 051100482760 --message-text "Текст"
 """
+
+from __future__ import annotations
 
 import argparse
 import json
@@ -16,13 +20,17 @@ import os
 import platform
 import socket
 import subprocess
-import sys
 import tempfile
+import threading
 import time
 import urllib.parse
 import urllib.request
+import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import sync_playwright
 
@@ -34,10 +42,58 @@ DEFAULT_CHROME_UA = (
 )
 
 
+class JobRequest(BaseModel):
+    login: str = Field(min_length=1)
+    password: str = Field(min_length=1)
+    inn: str = Field(min_length=1)
+    message_text: str = Field(min_length=1)
+
+
+class FedresursAutomationService:
+    def __init__(self, *, chrome_path: str | None, max_parallel_jobs: int, queue_if_busy: bool) -> None:
+        self.chrome_path = chrome_path or detect_system_chrome()
+        if not self.chrome_path:
+            raise RuntimeError("Не найден установленный Google Chrome. Передайте --browser-path")
+        self.max_parallel_jobs = max(1, max_parallel_jobs)
+        self.queue_if_busy = queue_if_busy
+        self.executor = ThreadPoolExecutor(max_workers=self.max_parallel_jobs)
+        self.semaphore = threading.Semaphore(self.max_parallel_jobs)
+
+    def submit(self, payload: JobRequest):
+        return self.executor.submit(self._run_job, payload)
+
+    def _run_job(self, payload: JobRequest) -> dict:
+        if self.queue_if_busy:
+            with self.semaphore:
+                return self._run_once(payload)
+
+        if not self.semaphore.acquire(blocking=False):
+            raise RuntimeError("Сервис занят: достигнут лимит параллельных задач")
+        try:
+            return self._run_once(payload)
+        finally:
+            self.semaphore.release()
+
+    def _run_once(self, payload: JobRequest) -> dict:
+        started_at = time.time()
+        result = run_automation(
+            login=payload.login,
+            password=payload.password,
+            inn=payload.inn,
+            message_text=payload.message_text,
+            chrome_path=self.chrome_path,
+            url=TARGET_URL,
+            delay_ms=2500,
+            cdp_timeout_sec=20.0,
+        )
+        elapsed = round(time.time() - started_at, 2)
+        result["elapsed_sec"] = elapsed
+        return result
+
+
 def detect_system_chrome() -> str | None:
     system = platform.system().lower()
     candidates: list[str] = []
-
     if system == "windows":
         local_app_data = os.environ.get("LOCALAPPDATA", "")
         program_files = os.environ.get("PROGRAMFILES", "")
@@ -85,10 +141,7 @@ def safe_cleanup_temp_profile(temp_profile_dir: tempfile.TemporaryDirectory | No
     try:
         temp_profile_dir.cleanup()
     except PermissionError:
-        print(
-            "Не удалось удалить временный профиль Chrome (файлы заняты запущенным браузером). "
-            f"Папка останется на диске: {temp_profile_dir.name}"
-        )
+        print(f"Не удалось удалить временный профиль Chrome: {temp_profile_dir.name}")
 
 
 def pick_target_page(browser, target_url: str):
@@ -107,341 +160,57 @@ def fill_login_form(page, login: str, password: str) -> str:
     js = """
     (payload) => {
         const { login, password } = payload;
-
-        function findInputByHints(hints, typeName) {
-            const inputs = Array.from(document.querySelectorAll('input'));
-            return inputs.find((i) => {
-                const hay = [
-                    i.id || '',
-                    i.name || '',
-                    i.placeholder || '',
-                    i.className || '',
-                    i.getAttribute('aria-label') || '',
-                ].join(' ').toLowerCase();
-
-                const byHint = hints.some((h) => hay.includes(h));
-                const byType = typeName ? (i.type || '').toLowerCase() === typeName : true;
-                return byHint || byType;
-            }) || null;
-        }
-
-        const loginInput =
-            document.querySelector('#ctl00_ctplhMain_Login1_UserName') ||
-            document.querySelector('input[name="ctl00$ctplhMain$Login1$UserName"]') ||
-            findInputByHints(['login', 'логин', 'username', 'user'], null) ||
-            document.querySelector('input[type="text"]');
-
-        const passwordInput =
-            document.querySelector('#ctl00_ctplhMain_Login1_Password') ||
-            document.querySelector('input[name="ctl00$ctplhMain$Login1$Password"]') ||
-            findInputByHints(['password', 'пароль', 'pass'], 'password') ||
-            document.querySelector('input[type="password"]');
-
-        if (!loginInput || !passwordInput) {
-            return 'Не удалось найти поля логина/пароля';
-        }
-
-        loginInput.focus();
-        loginInput.value = login;
+        const loginInput = document.querySelector('#ctl00_ctplhMain_Login1_UserName') || document.querySelector('input[type="text"]');
+        const passwordInput = document.querySelector('#ctl00_ctplhMain_Login1_Password') || document.querySelector('input[type="password"]');
+        if (!loginInput || !passwordInput) return 'Не удалось найти поля логина/пароля';
+        loginInput.value = login; passwordInput.value = password;
         loginInput.dispatchEvent(new Event('input', { bubbles: true }));
-        loginInput.dispatchEvent(new Event('change', { bubbles: true }));
-
-        passwordInput.focus();
-        passwordInput.value = password;
         passwordInput.dispatchEvent(new Event('input', { bubbles: true }));
-        passwordInput.dispatchEvent(new Event('change', { bubbles: true }));
-
-        const agreementCheckbox =
-            document.querySelector('#ctl00_ctplhMain_agreement') ||
-            document.querySelector('input[name="ctl00$ctplhMain$agreement"]') ||
-            document.querySelector('input[type="checkbox"][data-item="agreementCheckbox"]');
-
-        if (agreementCheckbox) {
-            if (!agreementCheckbox.checked && typeof agreementCheckbox.click === "function") {
-                agreementCheckbox.click();
-            }
-            agreementCheckbox.checked = true;
-            agreementCheckbox.dispatchEvent(new Event('input', { bubbles: true }));
-            agreementCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
-        }
-
-        const submitButton =
-            document.querySelector('#ctl00_ctplhMain_Login1_LoginImageButton') ||
-            document.querySelector('input[name="ctl00$ctplhMain$Login1$LoginImageButton"]') ||
-            document.querySelector('input[type="image"][alt*="Войти" i]') ||
-            Array.from(document.querySelectorAll('button, input[type="submit"], input[type="image"], a'))
-                .find((el) => (el.textContent || el.value || el.alt || '').toLowerCase().includes('вход') ||
-                              (el.textContent || el.value || el.alt || '').toLowerCase().includes('login') ||
-                              (el.id || '').toLowerCase().includes('login') ||
-                              (el.name || '').toLowerCase().includes('login'));
-
-        if (!submitButton) {
-            return 'Поля заполнены, но кнопка входа не найдена';
-        }
-
-        submitButton.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
-        submitButton.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
-        submitButton.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-        if (typeof submitButton.click === "function") {
-            submitButton.click();
-        }
-
-        if (typeof window.WebForm_DoPostBackWithOptions === 'function' && submitButton.name) {
-            window.WebForm_DoPostBackWithOptions(new WebForm_PostBackOptions(submitButton.name, '', true, 'ctl00$ctplhMain$Login1', '', false, false));
-        } else {
-            const form = submitButton.form || submitButton.closest('form');
-            if (form && typeof form.submit === 'function') {
-                form.submit();
-            }
-        }
-
-        return agreementCheckbox
-            ? 'OK: поля заполнены, галочка согласия установлена, кнопка входа нажата'
-            : 'OK: поля заполнены, кнопка входа нажата (галочка согласия не найдена)';
+        const submitButton = document.querySelector('#ctl00_ctplhMain_Login1_LoginImageButton') || document.querySelector('input[type="submit"],input[type="image"],button');
+        if (!submitButton) return 'Поля заполнены, но кнопка входа не найдена';
+        submitButton.click();
+        return 'OK: поля заполнены, кнопка входа нажата';
     }
     """
     return page.evaluate(js, {"login": login, "password": password})
 
 
-def open_new_message_form(page, timeout_ms: int = 45000) -> str:
-    create_button = page.locator('img[alt="Создать новое сообщение"]')
-    create_button.first.wait_for(state="visible", timeout=timeout_ms)
-    create_button.first.click()
-
-    insolvent_input = page.locator(
-        'input#ctl00_ctl00_ctplhMain_CentralContentPlaceHolder_MessageTypeSelector_InsolventPicker_InsolventName'
-    )
-    insolvent_input.first.wait_for(state="visible", timeout=timeout_ms)
-    insolvent_input.first.click()
-    return "OK: открыта форма нового сообщения и активировано поле выбора должника"
+def open_new_message_form(page, timeout_ms: int = 45000) -> None:
+    page.locator('img[alt="Создать новое сообщение"]').first.wait_for(state="visible", timeout=timeout_ms)
+    page.locator('img[alt="Создать новое сообщение"]').first.click()
+    page.locator('input#ctl00_ctl00_ctplhMain_CentralContentPlaceHolder_MessageTypeSelector_InsolventPicker_InsolventName').first.wait_for(state="visible", timeout=timeout_ms)
 
 
-
-
-def search_individual_insolvent(page, query: str = "Абасс", timeout_ms: int = 45000) -> str:
-    print("[DEBUG] Подготовка к переходу на вкладку 'Физ. лица'...")
+def search_individual_insolvent(page, inn: str, timeout_ms: int = 45000) -> None:
     page.wait_for_timeout(1200)
-
-    def find_tab_container():
-        frames = [page.main_frame] + [f for f in page.frames if f != page.main_frame]
-        for frame in frames:
-            tab = frame.locator(
-                "a.rtsLink:has-text('Физ. лица'), a[href*='InsolventListWindow.aspx'][href*='filterBy=egrip']"
-            )
-            if tab.count() > 0:
-                return frame, tab
-        return None, None
-
-    frame, persons_tab = find_tab_container()
-    if frame is None or persons_tab is None:
-        frame_urls = ", ".join([f.url for f in page.frames])
-        raise PlaywrightError(f"Вкладка 'Физ. лица' не найдена ни в одном фрейме. Frames: {frame_urls}")
-
-    print(f"[DEBUG] Вкладка найдена. URL страницы: {page.url}; URL фрейма: {frame.url}")
-
-    context = page.context
-    old_pages = list(context.pages)
-    try:
-        persons_tab.first.click(timeout=timeout_ms)
-        print("[DEBUG] Клик по вкладке выполнен через Playwright.")
-    except PlaywrightError:
-        print("[DEBUG] Обычный клик не сработал, пробуем JS-клик по вкладке.")
-        frame.evaluate(
-            """
-            () => {
-                const tab = document.querySelector("a.rtsLink .rtsTxt");
-                if (!tab || !tab.textContent || !tab.textContent.includes("Физ. лица")) {
-                    throw new Error("Вкладка Физ. лица не найдена");
-                }
-                const link = tab.closest("a");
-                link.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
-                link.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
-                link.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
-                if (typeof link.click === "function") {
-                    link.click();
-                }
-            }
-            """
-        )
+    tab = page.locator("a.rtsLink:has-text('Физ. лица')").first
+    tab.wait_for(state="visible", timeout=timeout_ms)
+    tab.click(timeout=timeout_ms)
 
     target_page = page
-    detection_mode = "not-detected"
-    deadline = time.time() + timeout_ms / 1000
-    while time.time() < deadline:
-        new_pages = [p for p in context.pages if p not in old_pages]
-        if new_pages:
-            target_page = new_pages[-1]
-            detection_mode = "new-page"
-            break
-
-        if page.locator("#ctl00_cplhContent_InsolventList_tbLastNameEgrip").count() > 0:
-            target_page = page
-            detection_mode = "same-page-dom"
-            break
-
-        frame_input_detected = False
-        for frm in target_page.frames:
-            if frm.locator("#ctl00_cplhContent_InsolventList_tbLastNameEgrip").count() > 0:
-                detection_mode = "iframe-dom"
-                frame_input_detected = True
-                break
-        if frame_input_detected:
-            break
-
-        if "InsolventListWindow.aspx" in page.url:
-            target_page = page
-            detection_mode = "same-page-url"
-            break
-        time.sleep(0.2)
-
-    print(f"[DEBUG] Режим открытия вкладки: {detection_mode}. Текущий URL: {target_page.url}")
     target_page.wait_for_load_state("domcontentloaded", timeout=timeout_ms)
-
     inn_input = target_page.locator("#ctl00_cplhContent_InsolventList_EgripOrganizationCode_CodeTextBox")
     search_button = target_page.locator("#ctl00_cplhContent_InsolventList_btnSearchEgrip")
     result_row = target_page.locator("#resultTable tbody tr[onclick*='ReturnInsolvent']")
-    if inn_input.count() == 0:
-        print("[DEBUG] Поле ИНН не найдено в основном DOM, пробуем iframe.")
-        dynamic_frame = target_page.frame_locator("iframe[src*='InsolventListWindow.aspx']")
-        inn_input = dynamic_frame.locator("#ctl00_cplhContent_InsolventList_EgripOrganizationCode_CodeTextBox")
-        search_button = dynamic_frame.locator("#ctl00_cplhContent_InsolventList_btnSearchEgrip")
-        result_row = dynamic_frame.locator("#resultTable tbody tr[onclick*='ReturnInsolvent']")
-    else:
-        print("[DEBUG] Поле ИНН найдено в основном DOM страницы.")
-
     inn_input.first.wait_for(state="visible", timeout=timeout_ms)
-    inn_input.first.fill("051100482760")
-    print("[DEBUG] Введено значение ИНН: 051100482760")
-
-    search_button.first.wait_for(state="visible", timeout=timeout_ms)
+    inn_input.first.fill(inn)
     search_button.first.click()
-    print("[DEBUG] Кнопка поиска нажата.")
-
     result_row.first.wait_for(state="visible", timeout=timeout_ms)
     result_row.first.click()
-    print("[DEBUG] Выбрана единственная строка результата, модальное окно выбора должника закрыто.")
-
-    return "OK: открыта вкладка физ. лиц, введен ИНН, выполнен поиск и выбран найденный должник"
 
 
-def select_creditor_claims_message_type(page, timeout_ms: int = 45000) -> str:
-    print("[DEBUG] Открываем выбор типа сообщения...")
-    message_type_input = page.locator(
-        "#ctl00_ctl00_ctplhMain_CentralContentPlaceHolder_MessageTypeSelector_MessageTypeTextBox"
-    )
-    message_type_input.first.wait_for(state="visible", timeout=timeout_ms)
-    message_type_input.first.click()
-    page.wait_for_timeout(700)
-
-    tree_root_selector = "#ctl00_cplhContent_MessageTypeTree"
-    tree_scope = page
-    tree_found = page.locator(tree_root_selector).count() > 0
-
-    if not tree_found:
-        for frm in page.frames:
-            if frm.locator(tree_root_selector).count() > 0:
-                tree_scope = frm
-                tree_found = True
-                break
-
-    if not tree_found:
-        frame_urls = ", ".join([f.url for f in page.frames])
-        raise PlaywrightError(f"Дерево типов сообщений не найдено. Frames: {frame_urls}")
-
-    print("[DEBUG] Дерево типов сообщений найдено, раскрываем 'Требования кредиторов'.")
-
-    category_node = tree_scope.locator(
-        f"{tree_root_selector} li:has(span.rtIn:has-text('Требования кредиторов'))"
-    ).first
-    category_node.wait_for(state="visible", timeout=timeout_ms)
-
-    plus_icon = category_node.locator("span.rtPlus")
-    if plus_icon.count() > 0:
-        plus_icon.first.click()
-        print("[DEBUG] Клик по '+' выполнен.")
-    else:
-        category_node.locator("span.rtIn:has-text('Требования кредиторов')").first.click()
-        print("[DEBUG] '+' не найден, кликнули по тексту категории.")
-
-    message_type_item = tree_scope.locator(
-        f"{tree_root_selector} span.rtIn:has-text('Уведомление о получении требований кредитора')"
-    ).first
-    message_type_item.wait_for(state="visible", timeout=timeout_ms)
-    message_type_item.click()
-    print("[DEBUG] Выбран тип: 'Уведомление о получении требований кредитора'.")
-    return "OK: выбран тип сообщения 'Уведомление о получении требований кредитора'"
-
-
-def select_legal_case_and_continue(page, timeout_ms: int = 45000) -> str:
-    print("[DEBUG] Выбираем номер дела из выпадающего списка...")
-    legal_case_select = page.locator(
-        "#ctl00_ctl00_ctplhMain_CentralContentPlaceHolder_MessageTypeSelector_InsolventPicker_LegalCasesDropDownList"
-    )
-    legal_case_select.first.wait_for(state="visible", timeout=timeout_ms)
-
-    selected_value = legal_case_select.first.evaluate(
-        """
-        (el) => {
-            const options = Array.from(el.options || []);
-            const target = options.find((o) => (o.value || '').trim() && (o.textContent || '').trim());
-            if (!target) {
-                return null;
-            }
-            el.value = target.value;
-            el.dispatchEvent(new Event('change', { bubbles: true }));
-            return target.value;
-        }
-        """
-    )
-    if not selected_value:
-        raise PlaywrightError("Не найден непустой вариант с номером дела в списке LegalCasesDropDownList")
-    print(f"[DEBUG] Выбран номер дела, value={selected_value}")
-
-    next_button = page.locator(
-        "#ctl00_ctl00_ctplhMain_CentralContentPlaceHolder_MessageTypeSelector_SelectImageButton"
-    )
-    next_button.first.wait_for(state="visible", timeout=timeout_ms)
-    next_button.first.click()
-    print("[DEBUG] Нажата кнопка 'Далее'.")
-    return "OK: выбран номер дела и нажата кнопка 'Далее'"
-
-
-def fill_message_text(page, timeout_ms: int = 60000) -> str:
-    print("[DEBUG] Ожидание страницы создания сообщения...")
+def fill_message_text(page, message_text: str, timeout_ms: int = 60000) -> None:
     message_textarea = page.locator(
         "#ctl00_ctl00_ctplhMain_CentralContentPlaceHolder_ucCreateMessage_messageListView_ctrl0_ObjectProxy_ctrl0_ReceivingCreditorDemand2Message_ObjectProxy_ctrl0_ObjectProxyView1_ctrl0_Message"
     )
     message_textarea.first.wait_for(state="visible", timeout=timeout_ms)
-    message_textarea.first.fill("Это тестовый текст, все вроде супер работает")
-    print("[DEBUG] Текст сообщения заполнен.")
-    return "OK: текст сообщения заполнен"
+    message_textarea.first.fill(message_text)
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Открытие страницы входа через установленный Google Chrome")
-    parser.add_argument("--login", required=True, help="Логин")
-    parser.add_argument("--password", required=True, help="Пароль")
-    parser.add_argument("--url", default=TARGET_URL, help="URL страницы входа")
-    parser.add_argument("--delay-ms", type=int, default=2500, help="Задержка перед автозаполнением (мс)")
-    parser.add_argument("--user-agent", default=DEFAULT_CHROME_UA, help="User-Agent для вкладки")
-    parser.add_argument("--browser-path", default=None, help="Путь к установленному Google Chrome")
-    parser.add_argument("--profile-dir", default=None, help="Папка профиля Chrome (опционально)")
-    parser.add_argument("--no-autofill", action="store_true", help="Только открыть URL в вашем Chrome без автозаполнения")
-    parser.add_argument("--cdp-timeout-sec", type=float, default=20.0, help="Сколько ждать готовности CDP (сек)")
 
-    args = parser.parse_args()
-
-    chrome_path = args.browser_path or detect_system_chrome()
-    if not chrome_path:
-        print("Не найден установленный Google Chrome. Передайте --browser-path")
-        return 1
-
+def run_automation(*, login: str, password: str, inn: str, message_text: str, chrome_path: str, url: str, delay_ms: int, cdp_timeout_sec: float) -> dict:
     port = free_port()
-    temp_profile_dir = None
-    profile_dir = args.profile_dir
-    if not profile_dir:
-        temp_profile_dir = tempfile.TemporaryDirectory(prefix="fedresurs-chrome-")
-        profile_dir = temp_profile_dir.name
-
+    temp_profile_dir = tempfile.TemporaryDirectory(prefix=f"fedresurs-{uuid.uuid4().hex[:8]}-")
+    profile_dir = temp_profile_dir.name
     cmd = [
         chrome_path,
         "--no-first-run",
@@ -451,55 +220,104 @@ def main() -> int:
         "--remote-debugging-address=127.0.0.1",
         f"--user-data-dir={profile_dir}",
         "--new-window",
-        args.url,
+        url,
     ]
-
     proc = subprocess.Popen(cmd)
-    print(f"Запущен ВАШ Google Chrome: {chrome_path}")
-    print(f"PID: {proc.pid}")
 
-    if args.no_autofill:
-        print("Автозаполнение отключено (--no-autofill).")
-        return 0
+    try:
+        if not wait_cdp_ready(port, timeout_sec=max(cdp_timeout_sec, 1.0)):
+            return {"ok": False, "error": "CDP не поднялся вовремя", "pid": proc.pid}
 
-    if not wait_cdp_ready(port, timeout_sec=max(args.cdp_timeout_sec, 1.0)):
-        print("CDP не поднялся вовремя. Проверьте, не блокирует ли антивирус/политики флаг remote-debugging.")
-        print("Браузер открыт вашим chrome.exe — можно войти вручную.")
-        safe_cleanup_temp_profile(temp_profile_dir)
-        return 1
-
-    time.sleep(max(args.delay_ms, 0) / 1000)
-
-    with sync_playwright() as p:
-        try:
+        time.sleep(max(delay_ms, 0) / 1000)
+        with sync_playwright() as p:
             browser = p.chromium.connect_over_cdp(f"http://127.0.0.1:{port}")
-            _context, page = pick_target_page(browser, args.url)
-            page.goto(args.url, wait_until="domcontentloaded", timeout=45000)
-            page.wait_for_timeout(max(args.delay_ms, 0))
+            _context, page = pick_target_page(browser, url)
+            page.goto(url, wait_until="domcontentloaded", timeout=45000)
+            page.wait_for_timeout(max(delay_ms, 0))
+            result = fill_login_form(page, login, password)
+            if not result.startswith("OK:"):
+                return {"ok": False, "error": result, "pid": proc.pid}
+            open_new_message_form(page)
+            search_individual_insolvent(page, inn=inn)
+            fill_message_text(page, message_text=message_text)
+        return {"ok": True, "pid": proc.pid}
+    except PlaywrightError as exc:
+        return {"ok": False, "error": str(exc), "pid": proc.pid}
+    finally:
+        safe_cleanup_temp_profile(temp_profile_dir)
 
-            result = fill_login_form(page, args.login, args.password)
-            print(result)
-            if "Не удалось найти поля" in result:
-                print(f"Текущий URL: {page.url}")
-                print(f"Заголовок страницы: {page.title()}")
-            elif result.startswith("OK:"):
-                post_login_result = open_new_message_form(page)
-                print(post_login_result)
-                search_result = search_individual_insolvent(page)
-                print(search_result)
-                message_type_result = select_creditor_claims_message_type(page)
-                print(message_type_result)
-                legal_case_result = select_legal_case_and_continue(page)
-                print(legal_case_result)
-                fill_message_result = fill_message_text(page)
-                print(fill_message_result)
-        except PlaywrightError as exc:
-            print(f"Не удалось подключиться к вкладке Chrome через CDP: {exc}")
-            print("Но браузер открыт вашим chrome.exe — можно войти вручную.")
+
+def build_app(service: FedresursAutomationService) -> FastAPI:
+    app = FastAPI(title="Fedresurs Automation API")
+
+    @app.get("/health")
+    def health():
+        return {"status": "ok", "max_parallel_jobs": service.max_parallel_jobs, "queue_if_busy": service.queue_if_busy}
+
+    @app.post("/run")
+    def run_job(payload: JobRequest):
+        future = service.submit(payload)
+        try:
+            result = future.result()
+        except RuntimeError as exc:
+            raise HTTPException(status_code=429, detail=str(exc)) from exc
+        if not result.get("ok"):
+            raise HTTPException(status_code=500, detail=result)
+        return result
+
+    return app
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Fedresurs automation")
+    subparsers = parser.add_subparsers(dest="mode", required=True)
+
+    run_parser = subparsers.add_parser("run", help="Одиночный запуск")
+    run_parser.add_argument("--login", required=True)
+    run_parser.add_argument("--password", required=True)
+    run_parser.add_argument("--inn", required=True)
+    run_parser.add_argument("--message-text", required=True)
+    run_parser.add_argument("--url", default=TARGET_URL)
+    run_parser.add_argument("--delay-ms", type=int, default=2500)
+    run_parser.add_argument("--browser-path", default=None)
+    run_parser.add_argument("--cdp-timeout-sec", type=float, default=20.0)
+
+    serve_parser = subparsers.add_parser("serve", help="HTTP API сервер")
+    serve_parser.add_argument("--host", default="127.0.0.1")
+    serve_parser.add_argument("--port", type=int, default=8080)
+    serve_parser.add_argument("--workers", type=int, default=2, help="Максимум параллельных задач")
+    serve_parser.add_argument("--queue", action="store_true", help="Ставить задачи в очередь при перегрузке")
+    serve_parser.add_argument("--browser-path", default=None)
+
+    args = parser.parse_args()
+
+    if args.mode == "run":
+        chrome_path = args.browser_path or detect_system_chrome()
+        if not chrome_path:
+            print("Не найден установленный Google Chrome. Передайте --browser-path")
             return 1
-        finally:
-            safe_cleanup_temp_profile(temp_profile_dir)
+        result = run_automation(
+            login=args.login,
+            password=args.password,
+            inn=args.inn,
+            message_text=args.message_text,
+            chrome_path=chrome_path,
+            url=args.url,
+            delay_ms=args.delay_ms,
+            cdp_timeout_sec=args.cdp_timeout_sec,
+        )
+        print(json.dumps(result, ensure_ascii=False))
+        return 0 if result.get("ok") else 1
 
+    service = FedresursAutomationService(
+        chrome_path=args.browser_path,
+        max_parallel_jobs=args.workers,
+        queue_if_busy=args.queue,
+    )
+    app = build_app(service)
+    import uvicorn
+
+    uvicorn.run(app, host=args.host, port=args.port)
     return 0
 
 
