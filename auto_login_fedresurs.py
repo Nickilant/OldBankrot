@@ -219,16 +219,22 @@ def open_new_message_form(page, timeout_ms: int = 45000) -> str:
 
 
 def search_individual_insolvent(page, query: str = "Абасс", timeout_ms: int = 45000) -> str:
+    print("[DEBUG] Подготовка к переходу на вкладку 'Физ. лица'...")
+    page.wait_for_timeout(1200)
+
     persons_tab = page.locator(
         "a.rtsLink:has-text('Физ. лица'), a[href*='InsolventListWindow.aspx'][href*='filterBy=egrip']"
     )
     persons_tab.first.wait_for(state="visible", timeout=timeout_ms)
+    print(f"[DEBUG] Вкладка найдена. URL до клика: {page.url}")
 
     context = page.context
     old_pages = list(context.pages)
     try:
         persons_tab.first.click(timeout=timeout_ms)
+        print("[DEBUG] Клик по вкладке выполнен через Playwright.")
     except PlaywrightError:
+        print("[DEBUG] Обычный клик не сработал, пробуем JS-клик по вкладке.")
         page.evaluate(
             """
             () => {
@@ -248,36 +254,46 @@ def search_individual_insolvent(page, query: str = "Абасс", timeout_ms: int
         )
 
     target_page = page
+    detection_mode = "not-detected"
     deadline = time.time() + timeout_ms / 1000
     while time.time() < deadline:
         new_pages = [p for p in context.pages if p not in old_pages]
         if new_pages:
             target_page = new_pages[-1]
+            detection_mode = "new-page"
             break
 
         if page.locator("#ctl00_cplhContent_InsolventList_tbLastNameEgrip").count() > 0:
             target_page = page
+            detection_mode = "same-page-dom"
             break
 
         if "InsolventListWindow.aspx" in page.url:
             target_page = page
+            detection_mode = "same-page-url"
             break
         time.sleep(0.2)
 
+    print(f"[DEBUG] Режим открытия вкладки: {detection_mode}. Текущий URL: {target_page.url}")
     target_page.wait_for_load_state("domcontentloaded", timeout=timeout_ms)
 
     last_name_input = target_page.locator("#ctl00_cplhContent_InsolventList_tbLastNameEgrip")
     search_button = target_page.locator("#ctl00_cplhContent_InsolventList_btnSearchEgrip")
     if last_name_input.count() == 0:
+        print("[DEBUG] Поле не найдено в основном DOM, пробуем iframe.")
         frame = target_page.frame_locator("iframe[src*='InsolventListWindow.aspx']")
         last_name_input = frame.locator("#ctl00_cplhContent_InsolventList_tbLastNameEgrip")
         search_button = frame.locator("#ctl00_cplhContent_InsolventList_btnSearchEgrip")
+    else:
+        print("[DEBUG] Поле найдено в основном DOM страницы.")
 
     last_name_input.first.wait_for(state="visible", timeout=timeout_ms)
     last_name_input.first.fill(query)
+    print(f"[DEBUG] Введено значение в поле фамилии: {query}")
 
     search_button.first.wait_for(state="visible", timeout=timeout_ms)
     search_button.first.click()
+    print("[DEBUG] Кнопка поиска нажата.")
 
     return f"OK: открыта вкладка физ. лиц, введено '{query}', выполнен поиск"
 
