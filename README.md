@@ -1,53 +1,76 @@
-## Автовход в old.bankrot.fedresurs.ru через **ваш установленный Google Chrome**
+## Автоматизация old.bankrot.fedresurs.ru: CLI + HTTP API
 
-Скрипт `auto_login_fedresurs.py` запускает именно ваш локальный `chrome.exe` (или Chrome на macOS/Linux), открывает URL и при необходимости подключается к этой же вкладке через CDP для автозаполнения.
+Скрипт `auto_login_fedresurs.py` теперь умеет:
+- запускаться как **CLI** для одиночного прогона;
+- запускаться как **веб-сервер (FastAPI)**, чтобы инициировать выполнение через API.
+
+Для каждого запроса запускается отдельное окно Chrome с отдельным временным профилем.
 
 ### Установка
 
 ```bash
-pip install playwright
+pip install playwright fastapi uvicorn
 ```
 
-### Запуск
+---
+
+## 1) Одиночный запуск (CLI)
 
 ```bash
-python auto_login_fedresurs.py --login Zakirov5 --password 3DqEdz
+python auto_login_fedresurs.py run \
+  --login "user" \
+  --password "pass" \
+  --inn "051100482760" \
+  --message-text "Текст для поля"
 ```
 
-### Варианты запуска
+Опционально можно передать `--browser-path`.
+
+---
+
+## 2) Запуск API-сервера
 
 ```bash
-# Явно указать ваш chrome.exe
-python auto_login_fedresurs.py --login Zakirov5 --password 3DqEdz --browser-path "C:\Program Files\Google\Chrome\Application\chrome.exe"
-
-# Только открыть страницу в вашем Chrome без автозаполнения
-python auto_login_fedresurs.py --login Zakirov5 --password 3DqEdz --no-autofill
+python auto_login_fedresurs.py serve --host 0.0.0.0 --port 8080 --workers 2
 ```
 
-### Параметры
+Параметры:
+- `--workers` — максимум параллельных задач (по умолчанию 2).
+- `--queue` — если указан, лишние запросы **ждут в очереди**. Если не указан — при перегрузке вернется `429`.
 
-- `--url` — адрес страницы входа
-- `--delay-ms` — задержка перед автозаполнением
-- `--user-agent` — User-Agent для вкладки при CDP-автозаполнении
-- `--browser-path` — путь к вашему Google Chrome
-- `--profile-dir` — отдельная папка профиля Chrome (если не указать, скрипт создаёт временный профиль, чтобы CDP точно работал)
-- `--no-autofill` — просто открыть страницу в вашем Chrome
-- `--cdp-timeout-sec` — сколько ждать, пока Chrome поднимет CDP
+### Health-check
 
-### Важно
+```bash
+curl http://127.0.0.1:8080/health
+```
 
-Если в обычном Chrome тоже 403, это почти всегда серверная блокировка по IP/anti-bot/WAF.
+### Запуск задачи через API
 
+```bash
+curl -X POST http://127.0.0.1:8080/run \
+  -H "Content-Type: application/json" \
+  -d '{
+    "login": "user",
+    "password": "pass",
+    "inn": "051100482760",
+    "message_text": "Текст для поля"
+  }'
+```
 
-Примечание: если у вас уже открыт обычный Chrome, скрипт запускает отдельное окно с отдельным профилем, чтобы избежать `ECONNREFUSED` и гарантировать автологин через CDP.
+Успешный ответ:
 
-Если Chrome оставляет временный профиль занятым на Windows, скрипт не падает: он выведет путь к папке, которую можно удалить позже вручную.
+```json
+{
+  "ok": true,
+  "pid": 12345,
+  "elapsed_sec": 18.42
+}
+```
 
+---
 
-Скрипт запускает Chrome с флагами `--no-first-run` и `--no-default-browser-check`, чтобы не появлялось стартовое окно входа в Chrome перед страницей сайта.
+## Многопоточность / параллельность
 
-
-Для формы Fedresurs скрипт также автоматически ставит галочку соглашения (`ctl00_ctplhMain_agreement`) перед нажатием кнопки входа.
-
-
-Логика галочки обновлена: если чекбокс не отмечен, сначала вызывается `click()`, затем принудительно сохраняется `checked=true`, чтобы избежать случайного снятия галочки.
+- Предпочтительный режим: `--workers 2` (или больше) — одновременно выполняются несколько задач, каждая в своем окне Chrome.
+- Альтернативный режим очереди: `--queue` — если все воркеры заняты, запрос ждет освобождения слота и выполняется позже.
+- Без `--queue` при перегрузке API сразу отвечает `429 Too Many Requests`.
