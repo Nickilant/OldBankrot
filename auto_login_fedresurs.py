@@ -333,18 +333,16 @@ def select_creditor_claims_message_type(page, message_type_text: str, timeout_ms
         frame_urls = ", ".join([f.url for f in page.frames])
         raise PlaywrightError(f"Дерево типов сообщений не найдено. Frames: {frame_urls}")
 
-    category_node = tree_scope.locator(
-        f"{tree_root_selector} li:has(span.rtIn:has-text('Требования кредиторов'))"
-    ).first
-    category_node.wait_for(state="visible", timeout=timeout_ms)
+    tree_scope.locator(tree_root_selector).first.wait_for(state="visible", timeout=timeout_ms)
+    page.wait_for_timeout(150)
 
-    plus_icon = category_node.locator("span.rtPlus")
-    if plus_icon.count() > 0:
-        page.wait_for_timeout(150)
-        plus_icon.first.click()
-    else:
-        page.wait_for_timeout(150)
-        category_node.locator("span.rtIn:has-text('Требования кредиторов')").first.click()
+    expand_deadline = time.time() + timeout_ms / 1000
+    while time.time() < expand_deadline:
+        plus_icons = tree_scope.locator(f"{tree_root_selector} span.rtPlus:visible")
+        if plus_icons.count() == 0:
+            break
+        plus_icons.first.click()
+        page.wait_for_timeout(120)
 
     message_type_items = tree_scope.locator(f"{tree_root_selector} span.rtIn")
     message_type_item = None
