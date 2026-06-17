@@ -47,6 +47,7 @@ class JobRequest(BaseModel):
     password: str = Field(min_length=1)
     inn: str = Field(min_length=1)
     message_text: str = Field(min_length=1)
+    message_type_text: str = Field(min_length=1)
 
 
 class FedresursAutomationService:
@@ -81,6 +82,7 @@ class FedresursAutomationService:
             password=payload.password,
             inn=payload.inn,
             message_text=payload.message_text,
+            message_type_text=payload.message_type_text,
             chrome_path=self.chrome_path,
             url=TARGET_URL,
             delay_ms=2500,
@@ -307,14 +309,14 @@ def search_individual_insolvent(page, inn: str, timeout_ms: int = 45000) -> str:
     return "OK: открыта вкладка физ. лиц, введен ИНН, выполнен поиск и выбран найденный должник"
 
 
-def select_creditor_claims_message_type(page, timeout_ms: int = 45000) -> str:
+def select_creditor_claims_message_type(page, message_type_text: str, timeout_ms: int = 45000) -> str:
     message_type_input = page.locator(
         "#ctl00_ctl00_ctplhMain_CentralContentPlaceHolder_MessageTypeSelector_MessageTypeTextBox"
     )
     message_type_input.first.wait_for(state="visible", timeout=timeout_ms)
     page.wait_for_timeout(150)
     message_type_input.first.click()
-    page.wait_for_timeout(700)
+    page.wait_for_timeout(500)
 
     tree_root_selector = "#ctl00_cplhContent_MessageTypeTree"
     tree_scope = page
@@ -331,26 +333,38 @@ def select_creditor_claims_message_type(page, timeout_ms: int = 45000) -> str:
         frame_urls = ", ".join([f.url for f in page.frames])
         raise PlaywrightError(f"Дерево типов сообщений не найдено. Frames: {frame_urls}")
 
-    category_node = tree_scope.locator(
-        f"{tree_root_selector} li:has(span.rtIn:has-text('Требования кредиторов'))"
-    ).first
-    category_node.wait_for(state="visible", timeout=timeout_ms)
+    tree_scope.locator(tree_root_selector).first.wait_for(state="visible", timeout=timeout_ms)
+    page.wait_for_timeout(150)
 
-    plus_icon = category_node.locator("span.rtPlus")
-    if plus_icon.count() > 0:
-        page.wait_for_timeout(150)
-        plus_icon.first.click()
-    else:
-        page.wait_for_timeout(150)
-        category_node.locator("span.rtIn:has-text('Требования кредиторов')").first.click()
+    expand_deadline = time.time() + timeout_ms / 1000
+    while time.time() < expand_deadline:
+        plus_icons = tree_scope.locator(f"{tree_root_selector} span.rtPlus:visible")
+        if plus_icons.count() == 0:
+            break
+        plus_icons.first.click()
+        page.wait_for_timeout(120)
 
-    message_type_item = tree_scope.locator(
-        f"{tree_root_selector} span.rtIn:has-text('Уведомление о получении требований кредитора')"
-    ).first
+    message_type_items = tree_scope.locator(f"{tree_root_selector} span.rtIn")
+    message_type_item = None
+    deadline = time.time() + timeout_ms / 1000
+    while time.time() < deadline and message_type_item is None:
+        total_items = message_type_items.count()
+        for i in range(total_items):
+            item = message_type_items.nth(i)
+            item_text = (item.inner_text(timeout=1000) or "").strip()
+            if item_text == message_type_text:
+                message_type_item = item
+                break
+        if message_type_item is None:
+            time.sleep(0.15)
+
+    if message_type_item is None:
+        raise PlaywrightError(f"Тип сообщения '{message_type_text}' не найден в дереве")
+
     message_type_item.wait_for(state="visible", timeout=timeout_ms)
     page.wait_for_timeout(150)
     message_type_item.click()
-    return "OK: выбран тип сообщения 'Уведомление о получении требований кредитора'"
+    return f"OK: выбран тип сообщения '{message_type_text}'"
 
 
 def select_legal_case_and_continue(page, timeout_ms: int = 45000) -> str:
@@ -395,7 +409,7 @@ def fill_message_text(page, message_text: str, timeout_ms: int = 60000) -> str:
     return "OK: текст сообщения заполнен"
 
 
-def run_automation(*, login: str, password: str, inn: str, message_text: str, chrome_path: str, url: str, delay_ms: int, cdp_timeout_sec: float) -> dict:
+def run_automation(*, login: str, password: str, inn: str, message_text: str, message_type_text: str, chrome_path: str, url: str, delay_ms: int, cdp_timeout_sec: float) -> dict:
     port = free_port()
     temp_profile_dir = tempfile.TemporaryDirectory(prefix=f"fedresurs-{uuid.uuid4().hex[:8]}-")
     profile_dir = temp_profile_dir.name
@@ -431,7 +445,7 @@ def run_automation(*, login: str, password: str, inn: str, message_text: str, ch
             page.wait_for_timeout(150)
             search_individual_insolvent(page, inn=inn)
             page.wait_for_timeout(150)
-            select_creditor_claims_message_type(page)
+            select_creditor_claims_message_type(page, message_type_text=message_type_text)
             page.wait_for_timeout(150)
             select_legal_case_and_continue(page)
             page.wait_for_timeout(150)
@@ -497,6 +511,7 @@ def main() -> int:
             password=args.password,
             inn=args.inn,
             message_text=args.message_text,
+            message_type_text="Уведомление о получении требований кредитора",
             chrome_path=chrome_path,
             url=args.url,
             delay_ms=args.delay_ms,
