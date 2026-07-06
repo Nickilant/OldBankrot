@@ -16,8 +16,13 @@
 не переносит параллельных запусков.
 
 Эндпоинты:
-    POST /run                — создать новое сообщение (старый флоу, без изменений)
+    POST /notice-of-receipt-of-creditors-claims
+                             — сообщение "Уведомление о получении требований кредитора"
+                               (бывший /run; тип захардкожен)
+    POST /notice-of-a-judicial-act
+                             — сообщение "Сообщение о судебном акте" (тип захардкожен)
     POST /fetch-last-message — найти должника по ИНН, вернуть текст последнего сообщения
+    POST /find-user          — проверить, есть ли должник по ИНН (найден/не найден)
 
 Запуск CLI:
     python auto_login_fedresurs_v2.py run --login USER --password PASS --inn 051100482760 --message-text "Текст"
@@ -58,28 +63,73 @@ DEFAULT_CHROME_UA = (
 # Pydantic-модели запросов
 # ---------------------------------------------------------------------------
 
-# Тип сообщения, требующий дополнительных полей
+# Типы сообщений — под каждый свой эндпоинт со своей моделью.
 MESSAGE_TYPE_CREDITOR_DEMAND = "Уведомление о получении требований кредитора"
+MESSAGE_TYPE_JUDICIAL_ACT = "Сообщение о судебном акте"
+
+# Сообщение о судебном акте: какой судебный акт выбрать в выпадающем списке
+# DecreeType по короткому коду из запроса.
+#   "РД" → реструктуризация долгов, "РИ" → реализация имущества
+JUDICIAL_ACT_DECREE_VALUES = {
+    "РД": "18",  # о признании обоснованным заявления ... и введении реструктуризации его долгов
+    "РИ": "19",  # о признании гражданина банкротом и введении реализации имущества гражданина
+}
 
 
-class JobRequest(BaseModel):
+class CreditorDemandRequest(BaseModel):
+    """
+    Тело запроса для /notice-of-receipt-of-creditors-claims — строго под тип
+    'Уведомление о получении требований кредитора'.
+    message_type_text здесь НЕ передаётся — он захардкожен на сервере.
+    """
     login: str = Field(min_length=1)
     password: str = Field(min_length=1)
     inn: str = Field(min_length=1)
     message_text: str = Field(min_length=1)
-    message_type_text: str = Field(min_length=1)
 
-    # Поля только для MESSAGE_TYPE_CREDITOR_DEMAND — необязательны для остальных типов
-    corr_address: str | None = Field(default=None, description="Адрес для корреспонденции")
-    email: str | None = Field(default=None, description="Электронная почта")
-    demand_date: str | None = Field(default=None, description="Дата получения требования ДД.ММ.ГГГГ")
+    # Поля, обязательные для этого типа сообщения
+    corr_address: str = Field(min_length=1, description="Адрес для корреспонденции")
+    email: str = Field(min_length=1, description="Электронная почта")
+    demand_date: str = Field(min_length=1, description="Дата получения требования ДД.ММ.ГГГГ")
+    demand_sum: str = Field(min_length=1, description="Сумма требования")
+    occurrence_reason: str = Field(min_length=1, description="Основание возникновения требования")
+
+    # Кредитор: нужно хотя бы одно из двух. Если задан ИНН — он в приоритете.
+    # Проверку "хотя бы одно" делает эндпоинт (отдаёт 422).
     creditor_name: str | None = Field(default=None, description="Наименование кредитора (поиск по названию)")
     creditor_inn: str | None = Field(default=None, description="ИНН кредитора (поиск по ИНН; приоритетнее названия)")
-    demand_sum: str | None = Field(default=None, description="Сумма требования")
-    occurrence_reason: str | None = Field(default=None, description="Основание возникновения требования")
+
+
+class JudicialActRequest(BaseModel):
+    """
+    Тело запроса для /notice-of-a-judicial-act — строго под тип
+    'Сообщение о судебном акте'. message_type_text захардкожен на сервере.
+    """
+    login: str = Field(min_length=1)
+    password: str = Field(min_length=1)
+    inn: str = Field(min_length=1)
+    message_text: str = Field(min_length=1)
+
+    corr_address: str = Field(min_length=1, description="Адрес для корреспонденции")
+    email: str = Field(min_length=1, description="Электронная почта")
+
+    # Какой судебный акт выбрать: "РД" (реструктуризация) или "РИ" (реализация).
+    # Допустимость значения проверяет эндпоинт (отдаёт 422).
+    decree_type: str = Field(min_length=1, description="Тип судебного акта: 'РД' или 'РИ'")
+    decree_date: str = Field(min_length=1, description="Дата судебного акта ДД.ММ.ГГГГ")
+
+    # Шаблон: название из списка для выбора, либо пустая строка/None — не выбирать.
+    pattern_name: str | None = Field(default=None, description="Название шаблона (пусто — не выбирать)")
 
 
 class FetchLastMessageRequest(BaseModel):
+    login: str = Field(min_length=1)
+    password: str = Field(min_length=1)
+    inn: str = Field(min_length=1)
+
+
+class FindUserRequest(BaseModel):
+    """Тело запроса для /find-user — проверка наличия должника по ИНН."""
     login: str = Field(min_length=1)
     password: str = Field(min_length=1)
     inn: str = Field(min_length=1)
@@ -433,8 +483,17 @@ def open_insolvent_picker_on_legal_cases(page, timeout_ms: int = 45000) -> None:
     picker.first.click()
 
 
-def search_insolvent_in_modal(page, inn: str, timeout_ms: int = 45000) -> None:
-    """Общий хелпер: найти вкладку Физ.лица, ввести ИНН, выбрать первого."""
+def search_insolvent_in_modal(page, inn: str, timeout_ms: int = 45000,
+                              find_only: bool = False, find_timeout_ms: int = 15000):
+    """
+    Общий хелпер: найти вкладку Физ.лица, ввести ИНН, выбрать первого должника.
+
+    find_only=False (по умолчанию): ждёт результат и кликает первого; если за
+        timeout_ms результата нет — бросает ошибку (поведение для /run, /fetch).
+    find_only=True: после поиска возвращает True, если должник найден (и кликает
+        по нему), либо False, если за find_timeout_ms ничего не появилось.
+        Ошибку при "не найдено" НЕ бросает — это валидный ответ для /find-user.
+    """
     page.wait_for_timeout(1200)
 
     def find_tab_container():
@@ -500,12 +559,16 @@ def search_insolvent_in_modal(page, inn: str, timeout_ms: int = 45000) -> None:
     inn_input = target_page.locator("#ctl00_cplhContent_InsolventList_EgripOrganizationCode_CodeTextBox")
     search_button = target_page.locator("#ctl00_cplhContent_InsolventList_btnSearchEgrip")
     result_row = target_page.locator("#resultTable tbody tr[onclick*='ReturnInsolvent']")
+    # Маркер "ничего не найдено" — ВНУТРИ таблицы результатов (#resultTable),
+    # иначе .first ловит скрытые заглушки emptyDataText в других гридах формы.
+    empty_marker = target_page.locator('#resultTable [data-item="emptyDataText"]')
 
     if inn_input.count() == 0:
         dynamic_frame = target_page.frame_locator("iframe[src*='InsolventListWindow.aspx']")
         inn_input = dynamic_frame.locator("#ctl00_cplhContent_InsolventList_EgripOrganizationCode_CodeTextBox")
         search_button = dynamic_frame.locator("#ctl00_cplhContent_InsolventList_btnSearchEgrip")
         result_row = dynamic_frame.locator("#resultTable tbody tr[onclick*='ReturnInsolvent']")
+        empty_marker = dynamic_frame.locator('#resultTable [data-item="emptyDataText"]')
 
     inn_input.first.wait_for(state="visible", timeout=timeout_ms)
     page.wait_for_timeout(150)
@@ -514,9 +577,49 @@ def search_insolvent_in_modal(page, inn: str, timeout_ms: int = 45000) -> None:
     page.wait_for_timeout(150)
     search_button.first.click()
 
-    result_row.first.wait_for(state="visible", timeout=timeout_ms)
-    page.wait_for_timeout(150)
-    result_row.first.click()
+    # Даём partial-postback (Telerik RadAjax) отработать, чтобы не поймать
+    # начальное/устаревшее состояние таблицы результатов.
+    page.wait_for_timeout(1000)
+
+    # Ждём ОДНО из двух: строку должника ИЛИ маркер "ничего не найдено".
+    # Маркер позволяет мгновенно понять, что должника нет, и не висеть до таймаута.
+    detect_timeout_ms = find_timeout_ms if find_only else timeout_ms
+    deadline = time.time() + detect_timeout_ms / 1000
+    while time.time() < deadline:
+        # Должник найден?
+        try:
+            row_visible = result_row.count() > 0 and result_row.first.is_visible()
+        except PlaywrightError:
+            row_visible = False
+        if row_visible:
+            page.wait_for_timeout(150)
+            result_row.first.click()  # выбираем первого должника
+            return True
+
+        # Должника нет — внутри #resultTable появился маркер с текстом "не найдено".
+        # Проверяем по тексту (text_content), а не по is_visible — надёжнее.
+        empty_found = False
+        try:
+            if empty_marker.count() > 0:
+                txt = (empty_marker.first.text_content() or "").lower()
+                empty_found = "не найдено" in txt
+        except PlaywrightError:
+            empty_found = False
+        if empty_found:
+            if find_only:
+                return False
+            raise PlaywrightError(
+                f"Должник с ИНН {inn} не найден: по заданным критериям нет ни одной записи"
+            )
+
+        page.wait_for_timeout(300)
+
+    # Время вышло, ничего определённого не появилось
+    if find_only:
+        return False
+    raise PlaywrightError(
+        f"За {timeout_ms} мс не появились ни строка должника, ни маркер 'не найдено'. ИНН {inn}"
+    )
 
 
 def click_search_on_legal_cases(page, timeout_ms: int = 45000) -> None:
@@ -598,7 +701,9 @@ def open_new_message_form(page, timeout_ms: int = 45000) -> None:
     insolvent_input.first.click()
 
 
-def select_creditor_claims_message_type(page, message_type_text: str, timeout_ms: int = 45000) -> None:
+def select_message_type_in_tree(page, message_type_text: str, timeout_ms: int = 45000) -> None:
+    """Открывает дерево типов сообщений и выбирает узел с точным текстом message_type_text.
+    Подходит для любого типа сообщения (кредиторы, судебный акт и т.д.)."""
     message_type_input = page.locator(
         "#ctl00_ctl00_ctplhMain_CentralContentPlaceHolder_MessageTypeSelector_MessageTypeTextBox"
     )
@@ -851,6 +956,76 @@ def fill_creditor_demand_fields(
     page.wait_for_timeout(800)
 
 
+def fill_judicial_act_fields(
+    page,
+    *,
+    corr_address: str,
+    email: str,
+    decree_type: str,
+    decree_date: str,
+    pattern_name: str | None = None,
+    timeout_ms: int = 60000,
+) -> None:
+    """
+    Заполняет поля формы для типа 'Сообщение о судебном акте'.
+    Вызывать ПОСЛЕ select_legal_case_and_continue и ДО fill_message_text.
+
+    decree_type: 'РД' (реструктуризация) или 'РИ' (реализация) — выбор в DecreeType.
+    pattern_name: название шаблона из списка; пусто/None — шаблон не выбираем.
+    """
+    decree_value = JUDICIAL_ACT_DECREE_VALUES.get((decree_type or "").strip())
+    if not decree_value:
+        raise PlaywrightError(
+            f"Неизвестный тип судебного акта '{decree_type}', ожидается 'РД' или 'РИ'"
+        )
+
+    # --- Блок Публикатор ---
+    addr_input = page.locator('input[data-element="corrAddress"]')
+    addr_input.first.wait_for(state="visible", timeout=timeout_ms)
+    page.wait_for_timeout(150)
+    addr_input.first.fill(corr_address)
+
+    email_input = page.locator(
+        '#ctl00_ctl00_ctplhMain_CentralContentPlaceHolder_ucCreateMessage_messageListView_ctrl0_PublisherControl_tbEmail'
+    )
+    email_input.first.wait_for(state="visible", timeout=timeout_ms)
+    page.wait_for_timeout(150)
+    email_input.first.fill(email)
+
+    # --- Блок Сообщение ---
+
+    # Судебный акт (DecreeType) — выбор по value. AutoPostBack может перерисовать форму.
+    decree_select = page.locator(
+        '#ctl00_ctl00_ctplhMain_CentralContentPlaceHolder_ucCreateMessage_messageListView_ctrl0_ObjectProxy_ctrl0_ArbitralDecreeForm_ObjectProxy_ctrl0_MessageContentProxy_ctrl0_DecisionTypeView_ctrl0_DecreeType'
+    )
+    decree_select.first.wait_for(state="visible", timeout=timeout_ms)
+    page.wait_for_timeout(150)
+    decree_select.first.select_option(value=decree_value)
+    page.wait_for_timeout(800)  # ждём возможный постбэк после выбора акта
+
+    # Дата судебного акта
+    date_input = page.locator(
+        '#ctl00_ctl00_ctplhMain_CentralContentPlaceHolder_ucCreateMessage_messageListView_ctrl0_ObjectProxy_ctrl0_ArbitralDecreeForm_ObjectProxy_ctrl0_MessageContentProxy_ctrl0_FirstCourtProxy_ctrl0_DecreeDate_radDatePicker_dateInput'
+    )
+    date_input.first.wait_for(state="visible", timeout=timeout_ms)
+    page.wait_for_timeout(150)
+    date_input.first.fill(decree_date)
+    date_input.first.dispatch_event("change")  # чтобы датпикер принял значение
+    page.wait_for_timeout(150)
+
+    # Шаблон (опционально). Пустая строка/None — пропускаем.
+    if pattern_name and pattern_name.strip():
+        pattern_select = page.locator(
+            '#ctl00_ctl00_ctplhMain_CentralContentPlaceHolder_ucCreateMessage_messageListView_ctrl0_ObjectProxy_ctrl0_ArbitralDecreeForm_ObjectProxy_ctrl0_MessageContentProxy_ctrl0_PatternSetter_PatternsList'
+        )
+        pattern_select.first.wait_for(state="visible", timeout=timeout_ms)
+        page.wait_for_timeout(150)
+        pattern_select.first.select_option(label=pattern_name.strip())
+        page.wait_for_timeout(800)
+        # Выбор шаблона может вызвать диалог подтверждения подстановки текста
+        dismiss_dialogs(page)
+
+
 def fill_message_text(page, message_text: str, timeout_ms: int = 60000) -> None:
     message_textarea = page.locator('textarea[data-item="message-text"]')
     message_textarea.first.wait_for(state="visible", timeout=timeout_ms)
@@ -934,7 +1109,7 @@ def run_automation(
             page.wait_for_timeout(150)
             search_insolvent_in_modal(page, inn=inn)
             page.wait_for_timeout(150)
-            select_creditor_claims_message_type(page, message_type_text=message_type_text)
+            select_message_type_in_tree(page, message_type_text=message_type_text)
             page.wait_for_timeout(150)
             select_legal_case_and_continue(page)
             page.wait_for_timeout(150)
@@ -1010,6 +1185,132 @@ def fetch_last_message_automation(*, login: str, password: str, inn: str,
 
 
 # ---------------------------------------------------------------------------
+# Флоу 3: проверить наличие должника по ИНН (новое API /find-user)
+# ---------------------------------------------------------------------------
+
+def find_user_automation(*, login: str, password: str, inn: str,
+                         chrome_path: str, url: str, delay_ms: int,
+                         cdp_timeout_sec: float) -> dict:
+    """
+    Повторяет начало флоу /run: вход → форма нового сообщения → модалка
+    должника → ввод ИНН → попытка выбрать первого должника. На этом
+    останавливается и возвращает, найден ли должник по ИНН.
+
+    Ответ: { "ok": true, "found": true|false, "inn": "...", "elapsed_sec": .. }
+    found=false при ok=true — это НЕ ошибка, а валидный результат "не нашли".
+    """
+    proc, port, temp_profile_dir = launch_chrome(chrome_path, url, delay_ms, cdp_timeout_sec)
+    try:
+        if not wait_cdp_ready(port, timeout_sec=max(cdp_timeout_sec, 1.0)):
+            return {"ok": False, "error": "CDP не поднялся вовремя", "pid": proc.pid}
+
+        with sync_playwright() as p:
+            browser = p.chromium.connect_over_cdp(f"http://127.0.0.1:{port}")
+            _context, page = pick_target_page(browser, url)
+            page.goto(url, wait_until="domcontentloaded", timeout=60000)
+
+            # 1. Авторизация (идемпотентная)
+            result = ensure_logged_in(page, login, password)
+            if not result.startswith("OK:"):
+                return {"ok": False, "error": result, "pid": proc.pid}
+            page.wait_for_load_state("domcontentloaded", timeout=60000)
+            page.wait_for_timeout(500)
+            dismiss_dialogs(page)
+            page.wait_for_timeout(150)
+
+            # 2. Форма нового сообщения → модалка должника → ввод ИНН → выбор первого
+            open_new_message_form(page)
+            page.wait_for_timeout(150)
+            found = search_insolvent_in_modal(page, inn=inn, find_only=True)
+
+        return {"ok": True, "found": bool(found), "inn": inn, "pid": proc.pid}
+    except PlaywrightError as exc:
+        return {"ok": False, "error": str(exc), "pid": proc.pid}
+    finally:
+        kill_chrome(proc)
+
+
+# ---------------------------------------------------------------------------
+# Флоу 4: создать сообщение "Сообщение о судебном акте" (API /notice-of-a-judicial-act)
+# ---------------------------------------------------------------------------
+
+def notice_of_judicial_act_automation(
+    *,
+    login: str,
+    password: str,
+    inn: str,
+    message_text: str,
+    corr_address: str,
+    email: str,
+    decree_type: str,
+    decree_date: str,
+    pattern_name: str | None,
+    chrome_path: str,
+    url: str,
+    delay_ms: int,
+    cdp_timeout_sec: float,
+) -> dict:
+    # Проверка значения типа акта до запуска браузера
+    if (decree_type or "").strip() not in JUDICIAL_ACT_DECREE_VALUES:
+        return {
+            "ok": False,
+            "error": f"Неизвестный decree_type '{decree_type}', ожидается 'РД' или 'РИ'",
+        }
+
+    proc, port, temp_profile_dir = launch_chrome(chrome_path, url, delay_ms, cdp_timeout_sec)
+    try:
+        if not wait_cdp_ready(port, timeout_sec=max(cdp_timeout_sec, 1.0)):
+            return {"ok": False, "error": "CDP не поднялся вовремя", "pid": proc.pid}
+
+        with sync_playwright() as p:
+            browser = p.chromium.connect_over_cdp(f"http://127.0.0.1:{port}")
+            _context, page = pick_target_page(browser, url)
+            page.goto(url, wait_until="domcontentloaded", timeout=60000)
+
+            result = ensure_logged_in(page, login, password)
+            if not result.startswith("OK:"):
+                return {"ok": False, "error": result, "pid": proc.pid}
+            page.wait_for_load_state("domcontentloaded", timeout=60000)
+            page.wait_for_timeout(500)
+            dismiss_dialogs(page)
+            page.wait_for_timeout(150)
+
+            # Общие шаги (как в /notice-of-receipt-of-creditors-claims) до выбора типа
+            open_new_message_form(page)
+            page.wait_for_timeout(150)
+            search_insolvent_in_modal(page, inn=inn)  # бросит ошибку, если должника нет
+            page.wait_for_timeout(150)
+
+            # Свой тип сообщения
+            select_message_type_in_tree(page, message_type_text=MESSAGE_TYPE_JUDICIAL_ACT)
+            page.wait_for_timeout(150)
+            select_legal_case_and_continue(page)
+            page.wait_for_timeout(150)
+
+            # Поля типа "Сообщение о судебном акте"
+            fill_judicial_act_fields(
+                page,
+                corr_address=corr_address,
+                email=email,
+                decree_type=decree_type,
+                decree_date=decree_date,
+                pattern_name=pattern_name,
+            )
+            page.wait_for_timeout(150)
+
+            fill_message_text(page, message_text=message_text)
+            page.wait_for_timeout(150)
+            click_save_button(page)
+            page.wait_for_timeout(3000)
+
+        return {"ok": True, "pid": proc.pid}
+    except PlaywrightError as exc:
+        return {"ok": False, "error": str(exc), "pid": proc.pid}
+    finally:
+        kill_chrome(proc)
+
+
+# ---------------------------------------------------------------------------
 # FastAPI приложение
 # ---------------------------------------------------------------------------
 
@@ -1024,9 +1325,21 @@ def build_app(service: FedresursAutomationService, chrome_path: str) -> FastAPI:
             "queue_if_busy": service.queue_if_busy,
         }
 
-    @app.post("/run")
-    def run_job(payload: JobRequest):
-        """Создать новое сообщение на fedresurs."""
+    @app.post("/notice-of-receipt-of-creditors-claims")
+    def notice_of_receipt_of_creditors_claims(payload: CreditorDemandRequest):
+        """
+        Создать сообщение типа 'Уведомление о получении требований кредитора'.
+        (Этот эндпоинт раньше назывался /run.)
+        Тип сообщения захардкожен — в теле запроса не передаётся.
+        Кредитор задаётся через creditor_inn (приоритет) или creditor_name.
+        """
+        # Кредитор: нужно хотя бы одно из полей → иначе 422
+        if not payload.creditor_inn and not payload.creditor_name:
+            raise HTTPException(
+                status_code=422,
+                detail="Укажите creditor_inn или creditor_name",
+            )
+
         def job():
             started_at = time.time()
             result = run_automation(
@@ -1034,7 +1347,7 @@ def build_app(service: FedresursAutomationService, chrome_path: str) -> FastAPI:
                 password=payload.password,
                 inn=payload.inn,
                 message_text=payload.message_text,
-                message_type_text=payload.message_type_text,
+                message_type_text=MESSAGE_TYPE_CREDITOR_DEMAND,  # захардкожено
                 chrome_path=chrome_path,
                 url=TARGET_URL,
                 delay_ms=2500,
@@ -1046,6 +1359,82 @@ def build_app(service: FedresursAutomationService, chrome_path: str) -> FastAPI:
                 creditor_inn=payload.creditor_inn,
                 demand_sum=payload.demand_sum,
                 occurrence_reason=payload.occurrence_reason,
+            )
+            result["elapsed_sec"] = round(time.time() - started_at, 2)
+            return result
+
+        future = service.submit(job)
+        try:
+            result = future.result()
+        except RuntimeError as exc:
+            raise HTTPException(status_code=429, detail=str(exc)) from exc
+        if not result.get("ok"):
+            raise HTTPException(status_code=500, detail=result)
+        return result
+
+    @app.post("/notice-of-a-judicial-act")
+    def notice_of_a_judicial_act(payload: JudicialActRequest):
+        """
+        Создать сообщение типа 'Сообщение о судебном акте'.
+        Тип сообщения захардкожен — в теле запроса не передаётся.
+
+        decree_type: 'РД' (реструктуризация) или 'РИ' (реализация).
+        pattern_name: название шаблона или пусто/None — шаблон не выбирать.
+        """
+        if (payload.decree_type or "").strip() not in JUDICIAL_ACT_DECREE_VALUES:
+            raise HTTPException(
+                status_code=422,
+                detail="decree_type должен быть 'РД' или 'РИ'",
+            )
+
+        def job():
+            started_at = time.time()
+            result = notice_of_judicial_act_automation(
+                login=payload.login,
+                password=payload.password,
+                inn=payload.inn,
+                message_text=payload.message_text,
+                corr_address=payload.corr_address,
+                email=payload.email,
+                decree_type=payload.decree_type,
+                decree_date=payload.decree_date,
+                pattern_name=payload.pattern_name,
+                chrome_path=chrome_path,
+                url=TARGET_URL,
+                delay_ms=2500,
+                cdp_timeout_sec=20.0,
+            )
+            result["elapsed_sec"] = round(time.time() - started_at, 2)
+            return result
+
+        future = service.submit(job)
+        try:
+            result = future.result()
+        except RuntimeError as exc:
+            raise HTTPException(status_code=429, detail=str(exc)) from exc
+        if not result.get("ok"):
+            raise HTTPException(status_code=500, detail=result)
+        return result
+
+    @app.post("/find-user")
+    def find_user(payload: FindUserRequest):
+        """
+        Проверить наличие должника по ИНН: повторяет начало флоу /run до выбора
+        первого должника из списка и останавливается.
+
+        Ответ: { "ok": true, "found": true|false, "inn": "...", "elapsed_sec": .. }
+        found=false при ok=true означает, что должник по ИНН не найден (это не ошибка).
+        """
+        def job():
+            started_at = time.time()
+            result = find_user_automation(
+                login=payload.login,
+                password=payload.password,
+                inn=payload.inn,
+                chrome_path=chrome_path,
+                url=TARGET_URL,
+                delay_ms=2500,
+                cdp_timeout_sec=20.0,
             )
             result["elapsed_sec"] = round(time.time() - started_at, 2)
             return result
